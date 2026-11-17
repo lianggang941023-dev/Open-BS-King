@@ -7508,8 +7508,78 @@ async function renderDSWin(){
     +'<button class="btn sm" onclick="dsRestore()" style="font-size:9px" title="恢复上一次保存前的配置">恢复上次备份</button>'
     +'<button class="btn sm" onclick="closeDSWin()" style="font-size:9px">关闭</button>'
     +'</div>';
+  // v2.340 (2026-11-18 用户 m25750/m25751): 版本与更新 —— 放数据源窗口底部。
+  //   顶栏没空间, 用户指定放这; 这里本来就集中'连外部服务'的设置, 语义也搭。
+  h+='<div id="ds-ver-box" style="margin-top:8px;padding-top:6px;border-top:1px solid var(--bd)">'
+    +'<div style="display:flex;align-items:center;gap:8px;font-size:9px;color:var(--tx2)">'
+    +'<span>版本 <b id="ds-ver-cur" style="color:var(--gold);font-size:10px">—</b></span>'
+    +'<span id="ds-ver-build" style="color:var(--tx3)"></span>'
+    +'<span style="flex:1"></span>'
+    +'<button class="btn sm" onclick="dsVerCheck(1)" style="font-size:9px" title="去 GitHub 查有没有新版本">检查更新</button>'
+    +'<button class="btn sm" onclick="dsVerPull()" style="font-size:9px" title="git pull 拉最新代码 (本地有未提交改动会被拒绝)">更新版本</button>'
+    +'</div>'
+    +'<div id="ds-ver-msg" style="font-size:9px;color:var(--tx3);padding:3px 0 0;line-height:14px">正在读取版本…</div>'
+    +'</div>';
   $('ds-win-content').innerHTML=h;
+  dsVerInit();   // v2.340: 渲染完再填版本号(此时 DOM 已在)
   centerDSWin();  // 内容渲染后高度已定, 重新居中
+}
+
+// v2.340 (2026-11-18 用户 m25750): 版本 / 更新 —— 数据源窗口底部那三条。
+//   🔴 三个状态必须分开显示, 不能合成一个「已是最新」:
+//     ① 本地版本(离线可读) ② 远端检查结果(可能因为没网而失败) ③ 拉取结果
+//     合成一个布尔的话, 断网时会显示「已是最新」, 用户就再也不手动更新了。
+function dsVerPaint(d){
+  var cur=$('ds-ver-cur'), bd=$('ds-ver-build'), msg=$('ds-ver-msg');
+  if(!cur) return null;
+  cur.textContent=d.version||'—';
+  if(bd){ bd.textContent=d.build?('构建 '+d.build):'';
+    if(d.build) bd.title='这份代码的打包日期 —— 更新后还是旧日期说明没重启'; }
+  return msg;
+}
+function dsVerCheck(force){
+  var msg=$('ds-ver-msg');
+  if(msg){ msg.style.color='var(--tx3)'; msg.textContent='正在检查…'; }
+  api('/api/version/check'+(force?'?force=1':'')).then(function(d){
+    if(!d||d._err){ if(msg){msg.style.color='var(--red)';msg.textContent='检查失败: '+((d&&d._err)||'未知');} return; }
+    if(!msg) return;
+    var st=d.status||'unknown';
+    if(st==='same'){ msg.style.color='var(--tx2)';
+      msg.textContent='已是最新（本地 '+d.local+' / 远端 '+d.remote+'）';
+    }else if(st==='newer'){ msg.style.color='var(--gold)';
+      msg.textContent='发现新版本 '+d.remote+'（本地 '+d.local+'）—— 点「更新版本」拉取';
+    }else if(st==='older'){ msg.style.color='var(--orange)';
+      msg.textContent='本地 '+d.local+' 比远端 '+d.remote+' 还新（自己改过?）';
+    }else{ msg.style.color='var(--orange)';
+      msg.textContent='查不到远端版本'+(d.err?('：'+d.err):''); }
+  });
+}
+function dsVerPull(){
+  var msg=$('ds-ver-msg');
+  if(msg){ msg.style.color='var(--tx3)'; msg.textContent='正在拉取…（最长 3 分钟）'; }
+  api('/api/version/pull',{method:'POST'}).then(function(d){
+    if(!d||d._err){ if(msg){msg.style.color='var(--red)';msg.textContent='更新失败: '+((d&&d._err)||'未知');} return; }
+    if(!msg) return;
+    msg.style.color = d.ok? (d.changed?'var(--gold)':'var(--tx2)') : 'var(--red)';
+    msg.textContent = d.msg || (d.ok?'已是最新':'更新失败');
+    if(d.ok && d.changed){ msg.textContent += '  —— 请关闭终端后重新双击启动';
+      setTimeout(function(){ dsVerCheck(0); }, 800); }
+  });
+}
+function dsVerInit(){
+  api('/api/version').then(function(d){
+    if(!d||d._err) return;
+    var msg=dsVerPaint(d);
+    if(!msg) return;
+    var u=d.update||{};
+    if(u.ok){
+      if(u.status==='newer'){ msg.style.color='var(--gold)';
+        msg.textContent='发现新版本 '+u.remote+'（本地 '+u.local+'）—— 点「更新版本」拉取'; }
+      else if(u.status==='same'){ msg.style.color='var(--tx3)'; msg.textContent='已是最新（'+u.local+'）'; }
+      else { msg.style.color='var(--tx3)'; msg.textContent='本地 '+u.local; }
+    }else{ msg.style.color='var(--tx3)';
+      msg.textContent='本地 '+d.version+'（连不上 GitHub, 点「检查更新」重试）'; }
+  });
 }
 
 // 读取表单 → config (与后端结构对齐)

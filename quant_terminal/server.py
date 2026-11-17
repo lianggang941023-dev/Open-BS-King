@@ -105,6 +105,8 @@ from quant_terminal import market_recap as _mrc
 from quant_terminal import regime_scan as _rg   # v2.311 市场环境
 # v2.323 (2026-11-15 用户 m22464): 结果归档 —— 竞价打板全票全字段 + 五个窗口落盘
 from quant_terminal import archive as _arc
+# v2.340 (2026-11-18 用户 m25750): 版本机制 —— VERSION 文件是唯一真源, 本模块只读
+from quant_terminal import version as _ver
 
 PORT = 8799  # 新端口, 不冲突旧的8788
 
@@ -2254,6 +2256,69 @@ def in_auction_window():
     """当前是否处在 9:25~9:30 竞价下单窗口(且今天开市) —— 买入按开盘价成交。"""
     return _in_auction_window() and not ds.is_holiday()
 
+def _do_git_pull():
+    """v2.340 (2026-11-18 用户 m25750): 一键更新 —— 在仓库目录跑 git pull。
+
+    为什么是 git pull 而不是「下载 zip 解压覆盖」：
+      覆盖式更新会把 VERSION 与代码分开更新，出现「版本号说更新了，界面还是老样子」，
+      这种半新半旧的状态最难查。git pull 要么整体成功要么整体不动。
+
+    三道护栏：
+      ① 不是 git 仓库（比如用户拿的是 zip 解压版）⇒ 直接告诉他去网页下载，不硬来
+      ② 本地有未提交改动 ⇒ 拒绝。那说明有人手改过文件，强拉会静默冲掉（本仓库无备份）
+      ③ 网络/代理问题 ⇒ 原样回传 git 的 stderr，不要包装成「未知错误」
+
+    返回 dict:
+      ok        True = 拉取成功
+      before    拉取前的提交 sha(短)
+      after     拉取后的提交 sha(短)
+      version   拉取后的 VERSION 内容
+      changed   True = 确实有新提交被拉下来（需要重启服务）
+      msg       给人看的结果说明
+    """
+    import subprocess
+
+    base = _ver.BASE_DIR
+    if not os.path.isdir(os.path.join(base, '.git')):
+        return {'ok': False, 'changed': False,
+                'msg': '这不是 git 副本（没有 .git 目录）—— 请到 GitHub 页面下载最新版覆盖'}
+
+    def _git(*args, timeout=180):
+        return subprocess.run(['git', '-C', base] + list(args),
+                              capture_output=True, text=True,
+                              encoding='utf-8', errors='replace',
+                              timeout=timeout)
+
+    try:
+        before = (_git('rev-parse', '--short', 'HEAD').stdout or '').strip()
+        dirty = (_git('status', '--porcelain').stdout or '').strip()
+        if dirty:
+            n = len(dirty.splitlines())
+            return {'ok': False, 'changed': False, 'before': before, 'after': before,
+                    'msg': '本地有 %d 个文件未提交，已拒绝更新（强拉会冲掉它们）。'
+                           '请先执行 推送数据.bat 或告诉我们你想丢弃哪些改动' % n}
+
+        r = _git('pull', '--ff-only', 'origin', 'main')
+        if r.returncode != 0:
+            return {'ok': False, 'changed': False, 'before': before, 'after': before,
+                    'msg': 'git pull 失败：' + ((r.stderr or r.stdout or '').strip()[:600])}
+
+        after = (_git('rev-parse', '--short', 'HEAD').stdout or '').strip()
+        after_ver = _ver.current()
+        changed = (before != after)
+
+        if changed:
+            msg = '已从 %s 更新到 %s（当前版本 %s）—— 需要重启终端生效' % (before, after, after_ver)
+        else:
+            msg = '已经是最新的（%s / %s）' % (after, after_ver)
+        return {'ok': True, 'changed': changed, 'before': before, 'after': after,
+                'version': after_ver, 'msg': msg}
+    except subprocess.TimeoutExpired:
+        return {'ok': False, 'changed': False, 'msg': 'git pull 超时（180 秒），请检查网络或梯子'}
+    except FileNotFoundError:
+        return {'ok': False, 'changed': False, 'msg': '本机找不到 git 命令，请先安装 Git for Windows'}
+    except Exception as e:
+        return {'ok': False, 'changed': False, 'msg': '更新时出错：%s' % e}
 
 def get_trading_status():
     now = datetime.now()
@@ -4649,6 +4714,20 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
 
         # v2.281 (2026-11-12 用户 m10425): 板块轮动 AI 分析 —— 也是流式 NDJSON。
         #   与上面两条同理: **必须在主链 send_response 之前早返回**, 否则双状态行。
+        # v2.340 (2026-11-18 用户 m25750): 版本信息与更新检查
+        if path == '/api/version':
+            # 🔴 注意: _json() 只发 Content-Type + body, **不发状态行**。
+            #   这两条在主链 self.send_response(200) 之前早返回, 必须自己先发一次,
+            #   否则客户端收到的是没有状态行的残缺响应(urllib 直接抛 HTTP 0)。
+            self.send_response(200)
+            _v = _ver.info()
+            _v['update'] = _ver.check_update()
+            self._json(_v)
+            return
+        if path == '/api/version/check':
+            self.send_response(200)
+            self._json(_ver.check_update(force=('force' in qs)))
+            return
         if path == '/api/board_rps_ai':
             self._handle_board_rps_ai(qs)
             return
@@ -6681,6 +6760,14 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Access-Control-Allow-Origin', '*')
 
+            # v2.340 (2026-11-18 用户 m25750): 一键更新 —— 在仓库目录跑 git pull。
+            #   🔴 为什么不用网页上的"下载 zip 覆盖"：那会把 VERSION 和代码分开更新，
+            #      一半新一半旧最难查。git pull 是原子的，pull 完重启即可。
+            #   🔴 本地有未提交改动时**拒绝执行**：那说明用户手改过文件，
+            #      强拉会把改动冲掉（这个仓库没有备份机制）。
+            if path == '/api/version/pull':
+                self._json(_do_git_pull())
+                return
             # P3-10: 原POST /api/scan/start 死端点已删 (前端只用GET版, 且此版mode被硬编码忽略)
 
             if path == '/api/recap/reports':

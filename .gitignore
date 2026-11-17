@@ -71,3 +71,6 @@ desktop.ini
 
 # 本地推送脚本（含只有本机用的路径）
 /推送数据.bat
+
+# 可转债列表缓存 (运行时生成)
+kline_data/kzz_cache.json
