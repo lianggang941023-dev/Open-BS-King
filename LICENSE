@@ -19,21 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-NOTE ON THIRD-PARTY COMPONENTS
-
-This MIT license applies to the source code authored for this project only.
-It does NOT cover the following, whose copyright remains with their
-respective owners:
-
-  * tdx/lib/  — the Tongdaxin (通达信) tqs SDK binaries
-                (TdxAiData.dll, libTdxAiData.so, libTdxAiData.dylib, mfc100.dll)
-                These are distributed here only for convenience of debugging.
-                You must verify your own authorization to use them.
-
-  * quant_terminal/echarts.min.js — Apache ECharts, licensed under Apache-2.0.
-
-  * kline_data/ and dragon_data/ — market data obtained from public third-party
-                interfaces. Not authored by this project.

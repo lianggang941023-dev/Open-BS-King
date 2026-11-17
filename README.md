@@ -211,5 +211,5 @@ date,open,close,high,low,volume,总市值,流通市值,自由流通股本
 
 ## 八、许可
 
-代码部分采用 **MIT License**（见 `LICENSE`）。
-随附的第三方二进制（通达信 SDK）与数据文件不在此许可范围内，版权归各自所有者。
+代码部分采用 **MIT License**（见 [LICENSE](LICENSE)）。
+随附的第三方二进制（通达信 SDK）、Apache ECharts 与行情数据文件**不在此许可范围内**，版权归各自所有者，明细见 [THIRD-PARTY.md](THIRD-PARTY.md)。
