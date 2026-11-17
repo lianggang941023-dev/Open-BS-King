@@ -29,13 +29,24 @@ import time
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSION_FILE = os.path.join(BASE_DIR, 'VERSION')
 
-# 更新检查的远端：GitHub 仓库 + 原始文件地址
+# 更新检查的远端：git 协议是唯一稳定可用的通道。
+#   🔴 2026-11-18 实测（本机 + 用户梯子）：
+#     github.com                 直连 200 / 1.8s     ← 只有它通
+#     api.github.com             直连 000 / 代理 000  ← 被墙
+#     raw.githubusercontent.com  直连 000 / 代理 000  ← 被墙（/raw/ 走的也是它）
+#   所以只能用 `git ls-remote` / `git fetch`（走 github.com:443 的 git 协议）。
+#   好消息：远端 HEAD 的提交标题里就写着版本号（约定见下），不必单独取 VERSION 文件。
+#
+# 提交标题约定（**发版时必须遵守**）：
+#   提交信息以 `v2.NNN` 或 `v2.NNNa/b` 开头，例：
+#     "v2.341 修 xxx"  "v2.341a 补 xxx"
+#   check_update() 用正则从远端 HEAD 的标题里抠这个号；抠不到就退一步读远端 VERSION 文件。
 GH_REPO = 'lianggang941023-dev/Open-BS-King'
-GH_API = 'https://api.github.com/repos/%s' % GH_REPO
-GH_RAW = 'https://raw.githubusercontent.com/%s/main/VERSION' % GH_REPO
+GH_URL = 'https://github.com/%s.git' % GH_REPO
+GH_PAGE = 'https://github.com/%s' % GH_REPO
 
-# 检查更新的最短间隔（秒）。GitHub 对未登录请求限 60 次/小时，
-# 每次开数据源窗口都查一次很容易打满，所以留 60 秒缓存。
+# 检查更新的最短间隔（秒）。git ls-remote 不吃 GitHub 的 HTTP 限流，
+# 但每次都要握手 1 秒左右，60 秒缓存让频繁开关窗口时不用重复等。
 CHECK_TTL = 60.0
 
 _lock = threading.Lock()
@@ -87,69 +98,188 @@ def compare(local, remote):
     return 'older'
 
 
-def _opener():
-    """境内源统一请求层：先直连，失败回退代理（与 net.py 同策略）。
-
-    这里**不走 net.py** —— version 要能在 server.py 起不来的时候被单独 import，
-    不能反过来依赖它。"""
-    import urllib.request
-    handlers = [urllib.request.ProxyHandler({})]
-    op_direct = urllib.request.build_opener(*handlers)
-    try:
-        from quant_terminal import net as _net          # noqa: F401
-        return op_direct, True
-    except Exception:
-        return op_direct, False
+# 网络通道清单（按顺序尝试，第一个成功就用）
+#   🔴 2026-11-18 实测：github.com 直连正常但会被 GFW 间歇性 reset(Connection was reset /
+#      Could not connect after 21s)；用户梯子常开，socks5 1080 有时比直连稳，有时反之。
+#      所以两条都试，谁先通算谁 —— 不要写死"直连优先"或"代理优先"，网络状况是变的。
+_PROXY = 'socks5://127.0.0.1:1080'
 
 
-def _http_text(url, timeout=8.0):
-    """取一个 URL 的正文。直连优先，失败再回退系统代理。返回 (text, err)"""
-    import urllib.request
-    import urllib.error
-    errs = []
-    # ① 直连
-    try:
-        op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'BSKing-Terminal/' + current(),
-            'Accept': 'application/vnd.github+json',
-        })
-        with op.open(req, timeout=timeout) as r:
-            return r.read().decode('utf-8', 'replace'), ''
-    except Exception as e:
-        errs.append('direct: %s' % e)
-    # ② 回退：系统代理（用户梯子常开）
-    try:
-        op = urllib.request.build_opener()
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'BSKing-Terminal/' + current(),
-            'Accept': 'application/vnd.github+json',
-        })
-        with op.open(req, timeout=timeout) as r:
-            return r.read().decode('utf-8', 'replace'), ''
-    except Exception as e:
-        errs.append('proxy: %s' % e)
-    return '', ' | '.join(errs)
+def _git_once(args, proxy, timeout):
+    cmd = ['git', '-C', BASE_DIR]
+    if proxy:
+        cmd += ['-c', 'http.proxy=' + proxy]
+    cmd += list(args)
+    r = subprocess.run(cmd, capture_output=True, text=True,
+                       encoding='utf-8', errors='replace', timeout=timeout)
+    return (r.stdout or ''), (r.stderr or ''), r.returncode
+
+
+def _git(args, timeout=25.0, tries=2):
+    """跑一条 git 命令，返回 (stdout, stderr, returncode)。
+
+    为什么全部走 git 而不是 HTTP：
+      见文件头那段实测 —— 只有 github.com 通，api/raw 两个域名都被墙。
+      git 协议走 github.com:443，正好是唯一活着的那条路。
+
+    为什么带重试 + 代理回退：
+      直连 github.com 会被间歇性 RST（实测 'Recv failure: Connection was reset'），
+      重试一次多数能过；还不行就换 socks5 代理再试。
+      两条路都失败才认输，并把最后一条错误原样返回（不包装成'未知错误'）。"""
+    last_err = ''
+    channels = [(None, '直连'), (_PROXY, '代理')]
+    for attempt in range(max(1, tries)):
+        for proxy, label in channels:
+            try:
+                out, err, rc = _git_once(args, proxy, timeout)
+                if rc == 0:
+                    return out, err, rc
+                last_err = err.strip() or ('git %s 返回 %d' % (args[0] if args else '', rc))
+            except subprocess.TimeoutExpired:
+                last_err = 'git %s 超时（%d 秒，%s）' % (
+                    args[0] if args else '', int(timeout), label)
+            except FileNotFoundError:
+                return '', '本机找不到 git 命令，请先安装 Git for Windows', -2
+            except Exception as e:
+                last_err = 'git 调用失败（%s）：%s' % (label, e)
+        if attempt + 1 < tries:
+            time.sleep(1.2)
+    return '', last_err, -1
+
+
+def _is_repo():
+    """是不是 git 副本。zip 解压版没有 .git ⇒ 只能提示去网页下载。"""
+    return os.path.isdir(os.path.join(BASE_DIR, '.git'))
+
+
+def remote_refs():
+    """一次 ls-remote 拿回远端所有 refs，返回 (dict, err)。
+
+    🔴 为什么只调一次：
+      实测直连会被 RST，每次调用都要走「直连 → 代理 → 重试 → 代理」四趟，
+      单次成功的 ls-remote 就要 1~90 秒。原来 remote_head() 和 remote_tags()
+      各调一次，最坏 348 秒 —— 用户点一下要等 6 分钟，不可接受。
+      一次全量 ls-remote（不加 refs 过滤）只多传几百 KB，但省掉整轮重试。
+
+    返回形如 {'HEAD': sha, 'refs/heads/main': sha, 'refs/tags/v2.340': sha, ...}"""
+    if not _is_repo():
+        return {}, '不是 git 副本（没有 .git 目录）'
+    out, err, rc = _git(['ls-remote', 'origin'], timeout=40.0)
+    if rc != 0:
+        return {}, err.strip() or 'git ls-remote 失败'
+    d = {}
+    for line in out.splitlines():
+        p = line.split()
+        if len(p) >= 2:
+            d[p[1].strip()] = p[0].strip()
+    return d, ''
+
+
+def _sha7(s):
+    return (s or '')[:7]
+
+
+def remote_info():
+    """远端整体快照：{'head','head7','tags','latest','err'}。
+
+    tags   —— 远端所有 vX.YYY[ab] 形态的 tag（升序）
+    latest —— 最大的那个 tag；一个 tag 都没有时退回从 HEAD 提交标题里抠"""
+    refs, err = remote_refs()
+    if err:
+        return {'head': '', 'head7': '', 'tags': [], 'latest': '', 'src': '', 'err': err}
+
+    head = refs.get('HEAD') or refs.get('refs/heads/main') or ''
+    tags = []
+    for r in refs:
+        if r.startswith('refs/tags/'):
+            t = r[len('refs/tags/'):]
+            if t.endswith('^{}'):
+                t = t[:-3]
+            if _vtuple(t) is not None:
+                tags.append(t)
+    tags = sorted(set(tags), key=lambda x: (_vtuple(x) or (0, 0, 0, 0)))
+
+    latest, src = '', ''
+    if tags:
+        latest, src = tags[-1], 'tag'
+    else:
+        rv, verr = _remote_version_by_commit()
+        if rv:
+            latest, src = rv, 'commit'
+        else:
+            err = verr or ''
+    return {'head': head, 'head7': _sha7(head), 'tags': tags,
+            'latest': latest, 'src': src, 'err': err}
+
+
+def local_head():
+    """本地当前提交 sha。"""
+    if not _is_repo():
+        return ''
+    out, err, rc = _git(['rev-parse', 'HEAD'], timeout=15.0, tries=1)
+    return out.strip() if rc == 0 else ''
+
+
+# 旧接口保留（外部或调试可能还在用），内部改成走 remote_info，避免第二次联网
+def remote_head():
+    """远端 main 的提交 sha —— 兼容用，要求已知 remote_info 结果时别用它。"""
+    return remote_info().get('head', '')
+
+
+def remote_tags():
+    """远端版本 tag 列表 —— 兼容用。"""
+    d = remote_info()
+    return d.get('tags', []), d.get('err', '')
+def _remote_version_by_commit():
+    """兜底：从远端 HEAD 的提交标题里抠版本号。
+
+    约定 —— 发版提交的标题以 `v2.NNN` 或 `v2.NNNa` 开头（见文件头）。
+    只有 ls-remote 无法拿到标题，得先 fetch。这里用 fetch 但不 merge：
+      git fetch origin main --no-tags
+    再读 FETCH_HEAD 的标题。fetch 是增量的，重复调用几乎零成本。"""
+    import re
+    if not _is_repo():
+        return '', '不是 git 副本'
+    _, err, rc = _git(['fetch', 'origin', 'main', '--no-tags'], timeout=60.0)
+    if rc != 0:
+        return '', (err.strip() or 'git fetch 失败')[:300]
+    out, err2, rc2 = _git(['log', '-1', '--pretty=%s', 'FETCH_HEAD'])
+    if rc2 != 0:
+        return '', (err2.strip() or 'git log FETCH_HEAD 失败')[:300]
+    m = re.search(r'v(\d+)\.(\d+)([a-zA-Z]?)', out or '')
+    if not m:
+        return '', '远端最新提交标题里没有版本号：%s' % (out or '')[:80]
+    tag = 'v%s.%s%s' % (m.group(1), m.group(2), (m.group(3) or '').lower())
+    return tag, ''
 
 
 def check_update(force=False):
     """检查有没有新版本。
 
     返回 dict：
-      ok            True 表示**查到了远端版本**（不代表有更新）
-      local         本地版本
-      remote        远端版本（查不到就是 '')
-      status        'newer' / 'same' / 'older' / 'unknown'
-      url           仓库地址
-      build         本份代码的构建标记
-      err           失败原因（ok=False 时才有）
-      ts            这次检查的时间戳（秒）
-      cached        True 表示这是 60 秒内的缓存结果
+      ok       True = 查到了远端版本（不代表有更新）
+      local    本地版本
+      remote   远端版本（查不到就是 ''）
+      status   'newer' / 'same' / 'older' / 'unknown'
+      head     远端 main 的提交 sha 前 7 位（给人看，便于对到底是哪个提交）
+      url      仓库地址
+      build    本份代码的构建标记
+      err      失败原因（ok=False 时才有）
+      ts       这次检查的时间戳（秒）
+      cached   True 表示这是 CHECK_TTL 内的缓存结果
+      src      'tag' / 'commit' —— 版本号是从哪儿读到的
+      secs     这次实际耗时（秒）—— 网络慢的时候让用户知道为什么慢
 
     为什么要分 ok 和 status：
       「网络不通」和「已是最新」是两件事。合成一个布尔值的话，
-      断网时会显示「已是最新」，人就再也不会去手动更新了。"""
-    now = time.time()
+      断网时会显示「已是最新」，人就再也不会去手动更新了。
+
+    为什么用一次网络调用定全局：
+      root 直连会被 RST，一次 ls-remote 最坏要走「直连→代理→重试→代理」四趟。
+      原来查 head 和查 tag 各调一次 = 最坏 348 秒，用户点一下等六分钟。
+      现在一次全量 ls-remote（remote_info）同时拿到 head + tags。"""
+    t0 = time.time()
+    now = t0
     with _lock:
         if (not force) and _last['data'] is not None and (now - _last['ts']) < CHECK_TTL:
             d = dict(_last['data'])
@@ -157,30 +287,49 @@ def check_update(force=False):
             return d
 
     local = current()
-    txt, err = _http_text(GH_RAW)
-    remote = ''
-    if txt:
-        for line in txt.splitlines():
-            s = line.strip()
-            if s and not s.startswith('#'):
-                remote = s
-                break
+    remote, src, err, head = '', '', '', ''
+
+    if not _is_repo():
+        err = '这不是 git 副本（没有 .git）—— 请到 GitHub 页面下载最新版覆盖'
+    else:
+        ri = remote_info()
+        head = ri.get('head') or ''
+        remote = ri.get('latest') or ''
+        src = ri.get('src') or ''
+        err = ri.get('err') or ''
+        if not err and not remote:
+            err = '远端没有任何版本 tag，且提交标题里也没有版本号'
+
+    if remote and not err:
+        lh = local_head()
+        if head and lh and head == lh:
+            # 提交号一模一样 ⇒ 就算 tag 比较说 newer，实际也是同一份代码
+            status = 'same'
+        else:
+            status = compare(local, remote)
+    else:
+        status = 'unknown'
 
     out = {
         'ok': bool(remote),
         'local': local,
         'remote': remote,
-        'status': compare(local, remote) if remote else 'unknown',
-        'url': 'https://github.com/' + GH_REPO,
+        'status': status,
+        'src': src,
+        'head': (head or '')[:7],
+        'url': GH_PAGE,
         'build': APP_BUILD,
-        'err': '' if remote else (err or '远端 VERSION 内容为空'),
+        'err': err,
         'ts': now,
+        'secs': round(time.time() - t0, 2),
         'cached': False,
     }
     with _lock:
         _last['ts'] = now
         _last['data'] = dict(out)
     return out
+
+
 
 
 APP_BUILD = '2026-11-18'
@@ -192,7 +341,7 @@ def info():
         'version': current(),
         'build': APP_BUILD,
         'repo': GH_REPO,
-        'url': 'https://github.com/' + GH_REPO,
+        'url': GH_PAGE,
     }
 
 
@@ -211,7 +360,7 @@ def selftest():
     print()
     print('--- 联网检查 ---')
     r = check_update(force=True)
-    for k in ('ok', 'local', 'remote', 'status', 'err'):
+    for k in ('ok', 'local', 'remote', 'status', 'src', 'head', 'err'):
         print('  %-8s %s' % (k, r[k]))
 
 

@@ -209,7 +209,25 @@ date,open,close,high,low,volume,总市值,流通市值,自由流通股本
 
 ---
 
-## 八、许可
+## 八、版本与更新
+
+版本号写在仓库根的 `VERSION` 文件里，当前版本会显示在终端里
+（左下角 **⬡ 数据源设置** → 窗口最底部），旁边有「检查更新」和「更新版本」两个按钮。
+
+- **检查更新**：`git ls-remote` 读 GitHub 上最大的版本 tag，与本地 `VERSION` 比
+- **更新版本**：`git pull --ff-only origin main`，拉完需要重启终端
+- **改了代码自己发版**：改 `VERSION` → 提交（标题以版本号开头）→ `git tag -a vX.YYY`
+  → `git push origin main` + `git push origin refs/tags/vX.YYY`
+
+历史变更见 [CHANGELOG.md](CHANGELOG.md)。
+
+> ⚠️ **网络说明**：本项目实测 `api.github.com` 与 `raw.githubusercontent.com`
+> 在部分地区**无法访问**，因此检查更新只依赖 `github.com`（git 协议）。
+> 如果你那里 `github.com` 也连不上，检查更新会明确报「连不上」而不是假装「已是最新」。
+> 走 `git pull` 时若直连被重置，程序会自动改用 `socks5://127.0.0.1:1080` 重试
+> （本地有梯子时有效）。
+
+## 九、许可
 
 代码部分采用 **MIT License**（见 [LICENSE](LICENSE)）。
 随附的第三方二进制（通达信 SDK）、Apache ECharts 与行情数据文件**不在此许可范围内**，版权归各自所有者，明细见 [THIRD-PARTY.md](THIRD-PARTY.md)。
