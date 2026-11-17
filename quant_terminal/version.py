@@ -300,15 +300,11 @@ def check_update(force=False):
         if not err and not remote:
             err = '远端没有任何版本 tag，且提交标题里也没有版本号'
 
-    if remote and not err:
-        lh = local_head()
-        if head and lh and head == lh:
-            # 提交号一模一样 ⇒ 就算 tag 比较说 newer，实际也是同一份代码
-            status = 'same'
-        else:
-            status = compare(local, remote)
-    else:
-        status = 'unknown'
+    # 🔴 只用版本号比较，不用「提交号是否相同」来覆盖结论。
+    #   踩过：本地 VERSION 手改成 v2.339、远端 tag 是 v2.340，两边 git HEAD 相同
+    #   ⇒ 旧逻辑直接判 same，明明版本号更旧却说已是最新，用户就不会去更新了。
+    #   版本号是发版者声明的意图，提交号只是巧合；两者冲突时以版本号为准。
+    status = compare(local, remote) if (remote and not err) else 'unknown'
 
     out = {
         'ok': bool(remote),
