@@ -1,0 +1,9 @@
+# K 线/板块 CSV 与源码全部保持原样，禁止 git 做行尾转换
+# （2026-10-14 曾因 csv.DictWriter 默认 CRLF 污染过 5562 个 CSV，这里再兜一层）
+* -text
+*.csv -text
+*.py text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.txt text eol=lf

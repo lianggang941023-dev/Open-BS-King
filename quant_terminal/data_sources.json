@@ -1,0 +1,74 @@
+{
+  "version": 2,
+  "online": {
+    "realtime": {
+      "primary": "sina",
+      "backup": "tencent",
+      "sina_url": "http://hq.sinajs.cn/list={codes}",
+      "tencent_url": "http://qt.gtimg.cn/q={codes}",
+      "batch_size": 50
+    },
+    "kline": {
+      "provider": "tencent",
+      "enabled": true,
+      "url": "https://ifzq.gtimg.cn/appstock/app/newfqkline/get?param={market}{code},day,,,{count},qfq"
+    },
+    "minute": {
+      "url_primary": "https://ifzq.gtimg.cn/appstock/app/minute/query?code={code}",
+      "url_backup": "https://ifzq.gtimg.cn/appstock/app/minute/query?code={code}"
+    },
+    "sector_board": {
+      "url": "http://ifzq.gtimg.cn/appstock/app/board/index?board=industry"
+    },
+    "limit_pool": {
+      "provider": "akshare_em",
+      "fallback": "snapshot",
+      "cache_minutes": 30
+    },
+    "fundamental": {
+      "provider": "eastmoney_datacenter",
+      "url": "http://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_LICO_FN_CPD&columns=ALL&filter=(SECURITY_CODE%3D%22{code}%22)&pageSize=5&sortColumns=REPORTDATE&sortTypes=-1"
+    },
+    "fuyao": {
+      "enabled": true,
+      "base": "https://fuyao.aicubes.cn",
+      "timeout": 20,
+      "batch": 800,
+      "key": ""
+    },
+    "tdx": {
+      "enabled": true,
+      "lib_dir": "tdx/lib",
+      "timeout": 120,
+      "key": ""
+    }
+  },
+  "local": {
+    "kline_dir": "kline_data/daily",
+    "limit_history": "dragon_data/limit_up_history.csv",
+    "snapshot_dir": "选股池",
+    "industry_map": "kline_data/industry_map.csv",
+    "concept_map": "kline_data/concept_map.csv",
+    "sub_to_ind": "kline_data/sub_to_ind.csv",
+    "tdx_export_dir": ""
+  },
+  "ai": {
+    "enabled": true,
+    "timeout": 60,
+    "max_tokens": 1200,
+    "primary": {
+      "name": "智谱",
+      "base": "https://open.bigmodel.cn/api/paas/v4",
+      "model": "GLM-4-Flash",
+      "key": "",
+      "thinking": "disabled"
+    },
+    "backup": {
+      "name": "DeepSeek",
+      "base": "https://api.deepseek.com",
+      "model": "deepseek-flash",
+      "key": "",
+      "thinking": ""
+    }
+  }
+}

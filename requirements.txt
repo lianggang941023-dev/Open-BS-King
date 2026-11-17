@@ -1,0 +1,15 @@
+# BS King 量化终端 — Python 依赖
+# 开发与验证环境：Python 3.12.10 / Windows 11
+# 安装：pip install -r requirements.txt
+
+# —— 必需：全部 HTTP 请求都走它 ——
+requests>=2.28
+
+# —— 可选：只有用到「涨停池/跌停池/炸板池」的 akshare 兜底时才需要 ——
+# 不装也能跑：会退回到「同花顺 fuyao」或「本地快照推算」两条路径
+akshare>=1.10
+
+# 说明：
+#  · 其余全部是 Python 标准库（urllib / threading / concurrent / ctypes / hashlib …）
+#  · 通达信 tqs SDK（tdx/lib/）是第三方闭源二进制，不走 pip，见 README「第三方组件」
+#  · ECharts 已内联为 quant_terminal/echarts.min.js，不需要 npm
