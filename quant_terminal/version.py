@@ -102,6 +102,11 @@ def compare(local, remote):
 #   🔴 2026-11-18 实测：github.com 直连正常但会被 GFW 间歇性 reset(Connection was reset /
 #      Could not connect after 21s)；用户梯子常开，socks5 1080 有时比直连稳，有时反之。
 #      所以两条都试，谁先通算谁 —— 不要写死"直连优先"或"代理优先"，网络状况是变的。
+#
+#   🔴 2026-11-18 晚 再测：同一条 ls-remote，直连 **27.29 秒后 Recv failure: Connection was
+#      reset**，代理 **1.13 秒成功**。差了两个数量级，而且直连那次是白等 27 秒。
+#      用户梯子常开是既定事实，所以把代理提到第一位：通了立刻返回（1 秒级），
+#      代理没开/不通才回落直连（慢，但总比查不了强）。
 _PROXY = 'socks5://127.0.0.1:1080'
 
 
@@ -127,7 +132,10 @@ def _git(args, timeout=25.0, tries=2):
       重试一次多数能过；还不行就换 socks5 代理再试。
       两条路都失败才认输，并把最后一条错误原样返回（不包装成'未知错误'）。"""
     last_err = ''
-    channels = [(None, '直连'), (_PROXY, '代理')]
+    # 🔴 顺序 = 代理优先（实测 1.13 秒）→ 直连兜底（实测 27 秒后被 RST）。
+    #   理由见 _PROXY 上方那段。代理没开时第一趟会很快失败（连 1080 端口被拒），
+    #   不会像直连那样傻等 27 秒。
+    channels = [(_PROXY, '代理'), (None, '直连')]
     for attempt in range(max(1, tries)):
         for proxy, label in channels:
             try:
@@ -156,15 +164,21 @@ def remote_refs():
     """一次 ls-remote 拿回远端所有 refs，返回 (dict, err)。
 
     🔴 为什么只调一次：
-      实测直连会被 RST，每次调用都要走「直连 → 代理 → 重试 → 代理」四趟，
+      实测直连会被 RST，每次调用都要走「代理 → 直连 → 重试 → 代理」四趟，
       单次成功的 ls-remote 就要 1~90 秒。原来 remote_head() 和 remote_tags()
       各调一次，最坏 348 秒 —— 用户点一下要等 6 分钟，不可接受。
       一次全量 ls-remote（不加 refs 过滤）只多传几百 KB，但省掉整轮重试。
 
+    🔴 为什么用显式 URL 而不是 remote 名 'origin'（2026-11-18）：
+      自用版（D:\\AI Working\\_运行环境\\终端8799）**没有 .git 目录**，不是 git 副本。
+      原来这里写 'origin'，非副本就直接报「不是 git 副本」—— 结果自用版连
+      「检查有没有新版本」都做不了。
+      实测：在非 git 目录里 `git ls-remote <完整URL>` **完全能跑**（1.19 秒），
+      不依赖任何本地仓库配置。所以改成显式 URL，**检查更新与是不是 git 副本解耦**。
+      （「下载更新」仍然必须是 git 副本 —— 那步要 pull，见 server.py 的 _do_git_pull。）
+
     返回形如 {'HEAD': sha, 'refs/heads/main': sha, 'refs/tags/v2.340': sha, ...}"""
-    if not _is_repo():
-        return {}, '不是 git 副本（没有 .git 目录）'
-    out, err, rc = _git(['ls-remote', 'origin'], timeout=40.0)
+    out, err, rc = _git(['ls-remote', GH_URL], timeout=40.0)
     if rc != 0:
         return {}, err.strip() or 'git ls-remote 失败'
     d = {}
@@ -289,16 +303,17 @@ def check_update(force=False):
     local = current()
     remote, src, err, head = '', '', '', ''
 
-    if not _is_repo():
-        err = '这不是 git 副本（没有 .git）—— 请到 GitHub 页面下载最新版覆盖'
-    else:
-        ri = remote_info()
-        head = ri.get('head') or ''
-        remote = ri.get('latest') or ''
-        src = ri.get('src') or ''
-        err = ri.get('err') or ''
-        if not err and not remote:
-            err = '远端没有任何版本 tag，且提交标题里也没有版本号'
+    # 🔴 这里**不再**要求 _is_repo()（2026-11-18）：
+    #   自用版不是 git 副本，但 ls-remote 用显式 URL 照样能查版本 tag
+    #   ⇒ 自用版也能看到「有 v2.341 了」。只是点「更新版本」时会被告知
+    #     去网页下载（那步要 pull，见 server.py 的 _do_git_pull）。
+    ri = remote_info()
+    head = ri.get('head') or ''
+    remote = ri.get('latest') or ''
+    src = ri.get('src') or ''
+    err = ri.get('err') or ''
+    if not err and not remote:
+        err = '远端没有任何版本 tag，且提交标题里也没有版本号'
 
     # 🔴 只用版本号比较，不用「提交号是否相同」来覆盖结论。
     #   踩过：本地 VERSION 手改成 v2.339、远端 tag 是 v2.340，两边 git HEAD 相同

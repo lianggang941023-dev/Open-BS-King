@@ -1,6 +1,6 @@
 {
- "fetched_at": "2026-11-17 11:35:38",
- "elapsed_s": 36.5,
+ "fetched_at": "2026-11-18 11:35:43",
+ "elapsed_s": 36.2,
  "counts": {
   "industry": 320,
   "cn_concept": 390,
@@ -10,5 +10,5 @@
  "index_total": 848,
  "members_ok": 848,
  "members_fail": {},
- "stocks_union": 5584
+ "stocks_union": 5585
 }
