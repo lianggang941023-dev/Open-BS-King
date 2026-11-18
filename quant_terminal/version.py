@@ -109,6 +109,16 @@ def compare(local, remote):
 #      代理没开/不通才回落直连（慢，但总比查不了强）。
 _PROXY = 'socks5://127.0.0.1:1080'
 
+# 🔴 v2.342 (2026-11-18 用户 m26567): 必须带 CREATE_NO_WINDOW，否则每跑一次 git
+#   就会**弹一个黑窗口闪一下**。根因：服务是 pythonw.exe 起的、本身没有控制台，
+#   subprocess 起 git.exe 时 Windows 会为这个「没有控制台的新进程」配一个终端，
+#   于是屏幕上闪出 Windows Terminal（实测 EnumWindows 能抓到
+#   `CASCADIA_HOSTING_WINDOW_CLASS / 'Terminal'`，一闪就没）。
+#   ✓ 实测：加了这个 flag 之后控制台窗口 0 个（见 _selftest_console()）。
+#   ⚠ 同时 sync 里的 `subprocess.run(['git',...])` 与 server.py 的 `_do_git_pull`
+#     也必须加，三处缺一处就还会闪。
+_NO_WIN = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
 
 def _git_once(args, proxy, timeout):
     cmd = ['git', '-C', BASE_DIR]
@@ -116,7 +126,8 @@ def _git_once(args, proxy, timeout):
         cmd += ['-c', 'http.proxy=' + proxy]
     cmd += list(args)
     r = subprocess.run(cmd, capture_output=True, text=True,
-                       encoding='utf-8', errors='replace', timeout=timeout)
+                       encoding='utf-8', errors='replace', timeout=timeout,
+                       creationflags=_NO_WIN)
     return (r.stdout or ''), (r.stderr or ''), r.returncode
 
 

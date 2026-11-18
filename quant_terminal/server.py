@@ -2284,10 +2284,14 @@ def _do_git_pull():
                 'msg': '这不是 git 副本（没有 .git 目录）—— 请到 GitHub 页面下载最新版覆盖'}
 
     def _git(*args, timeout=180):
+        # 🔴 v2.342 (2026-11-18 用户 m26567): 必须带 CREATE_NO_WINDOW ——
+        #   服务是 pythonw.exe 起的、自身无控制台，subprocess 起 git.exe 时 Windows
+        #   会给新进程配一个终端窗口，屏幕上就是「黑窗一闪」。与 version.py 同一处根因。
         return subprocess.run(['git', '-C', base] + list(args),
                               capture_output=True, text=True,
                               encoding='utf-8', errors='replace',
-                              timeout=timeout)
+                              timeout=timeout,
+                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
 
     try:
         before = (_git('rev-parse', '--short', 'HEAD').stdout or '').strip()
@@ -7031,7 +7035,10 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                                        cwd=str(BASE_DIR),
                                        stdout=log_file,
                                        stderr=subprocess.STDOUT,
-                                       bufsize=0)  # 无缓冲, 实时输出进度
+                                       bufsize=0,
+                                       # v2.342 (用户 m26567): pythonw 服务自身无控制台，
+                                       #   起子进程会被 Windows 配个终端窗口 ⇒ 屏幕黑窗一闪。
+                                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                 proc.wait()
                 log_file.close()
                 # v2.131 (2026-10-01): 快照导入跑完 → 用同一批快照把市值两列强制刷成最新值
@@ -7771,7 +7778,10 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                     proc = subprocess.Popen([sys.executable, '-u', script, '--incremental'],
                                             cwd=str(BASE_DIR),
                                             stdout=log_file, stderr=subprocess.STDOUT,
-                                            bufsize=0)
+                                            bufsize=0,
+                                            # v2.342 (用户 m26567): 同 run_snapshot 那处，
+                                            #   pythonw 服务起子进程会弹出黑窗。
+                                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                     proc.wait()
                 except Exception as _e:
                     _swlog('holder_update_subproc', _e)
