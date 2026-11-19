@@ -15,6 +15,60 @@
 
 ---
 
+## v2.351 — 2026-11-20
+
+**更新功能大修。** 起因是另一台测试机（Windows + Python 3.13 + 没装 Git for Windows）
+的「检查更新 / 更新版本」两天都用不了。四个问题逐条查实，全部修掉。
+
+### 修复
+- **没有 git 也能查更新**（问题 1）—— 全工程只有两处调 git、都写死 `'git'`，没装 Git 就
+  `FileNotFoundError`。新增 `find_git()` 三级回退（PATH → 安装目录 → 各盘 PortableGit），
+  并且「检查更新」改走 **HTTP 通道**：`raw.githubusercontent.com` 读 VERSION、
+  `api.github.com/repos/.../tags` 读 tag 列表，三路并发只要 **0.5 秒**；
+  `git ls-remote` 退为兜底（实测最坏要 90 秒）
+- **运行时文件不再阻塞更新**（问题 2）—— 原来 `git status` 里只要有内容就拒绝更新，
+  而其中绝大多数是程序自己生成的（`kline_data/*.csv` 追加、各类 `*_cache.json`、`logs/`）。
+  新增 `classify_dirty()` 四分类：`runtime` 自动 stash → pull → pop，
+  `config`（`data_sources.json` 等）拒绝，`source` / `other` 拒绝并说明原因
+- **pull 之前先做三方预演**（问题 3）—— 移植 TSP `scripts/upgrade_check.py` 的思路：
+  `git merge-tree --write-tree --merge-base` 预演当前分支与远端的合并，提前告知
+  「远端也改了你改过的 N 个文件，其中 M 个会文本冲突」。不再等 pull 报
+  `Your local changes would be overwritten by merge` 才发现
+- **没有 git 时用 zip 兜底**（问题 4）—— `_up_zip_update()` 下载
+  `codeload.github.com/.../zip/refs/heads/main`，只覆盖 `.py/.html/.js/.vbs/.ico/.css`，
+  **显式跳过 `data_sources.json`，只允许 `quant_terminal/` 前缀**，
+  被覆盖的原文件先备份到 `_bak_zip_<时间戳>/`
+- **🔴 「更新版本」按钮从 v2.340 起就是死的** —— `dsVerPull()` 里写的是
+  `api('/api/version/pull',{method:'POST'})`，而 `api()` 的签名是 `function api(p)`，
+  **第二个参数被静默丢掉** ⇒ 实际发出的是 `GET` ⇒ 路由是 POST-only ⇒ 404。
+  更阴的是 404 的 body 是 `{"error":"Not found"}`，`r.json()` 照样解析成功，
+  不进错误分支 ⇒ 界面永远只显示「更新失败」，一个字原因都没有。改成 `post()`
+
+### 新增
+- `version.py` 的 `merge_check()` / `dirty_breakdown()` / `find_git()` / `remote_info_http()`
+  都可以单独调用，便于排查
+- `/api/version` 多返回 `git: {ok, path, how}` 与 `repo_ok`；设置窗版本行多一颗
+  `#ds-ver-git`，一眼看出本机是「git 副本」还是「无 git · 走 zip 覆盖」
+
+### 安全
+- **zip 兜底有版本护栏**：本机版本 ≥ 远端时**拒绝覆盖**。
+  自用版没有 `.git`（不是 git 副本），而它通常比远端还新（远端是自己推上去的快照），
+  不护栏就会把自己 1.28 MB 的 `terminal.html` 降级成远端旧版
+- `.gitignore` 补 4 条：`quant_terminal/logs/`、`kline_data/*_cache.json`、
+  `kline_data/.mcap_written.json`、`kline_data/ai_market_recaps.json`
+
+### 说明
+- `git merge-tree --write-tree` **有冲突时返回码是 1**（不是 0），
+  而项目里 `_git()` 的契约是「rc==0 才算成功」—— 第一版复用它导致现代形态永远拿不到结果、
+  `how` 永远是 `legacy`。新增 `_git_local()`（本地只读命令专用，单次、不走代理、
+  returncode 原样返回）解决
+- `version.compare(local, remote)` 返回的是**远端视角**：`newer` = 远端更新、
+  `older` = 本机更新、`same` = 一样。zip 护栏第一版把这两个方向写反了，
+  结果「本机更新」时界面显示「已经是最新的」，功能对但话说不清
+
+
+---
+
 ## v2.349 — 2026-11-20
 
 本版把自用版 **v2.343 ~ v2.349** 全部同步过来。原始小版本号保留在括注里，

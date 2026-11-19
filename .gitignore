@@ -74,3 +74,12 @@ desktop.ini
 
 # 可转债列表缓存 (运行时生成)
 kline_data/kzz_cache.json
+
+# ===== v2.351 (2026-11-20 用户 m35797): 运行时文件补齐 =====
+# 起因: 测试机点「更新版本」永远被拒 —— git status 里全是程序自己生成的文件。
+#   version.py 的 dirty_breakdown() 已能把它们认成 runtime 并自动 stash/pop 兜底,
+#   但那只是兜底; 该做的是让它们压根别进 git status。
+quant_terminal/logs/
+kline_data/*_cache.json
+kline_data/.mcap_written.json
+kline_data/ai_market_recaps.json

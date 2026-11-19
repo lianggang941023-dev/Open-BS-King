@@ -2245,58 +2245,361 @@ def in_auction_window():
     """当前是否处在 9:25~9:30 竞价下单窗口(且今天开市) —— 买入按开盘价成交。"""
     return _in_auction_window() and not ds.is_holiday()
 
+# ═══ v2.351 (2026-11-20 用户 m35797/m35885): 一键更新的两个新零件 ═══════════════
+#   为什么不在文件顶部 import zipfile/tempfile/shutil:
+#   那两个只给"没有 git 时的 zip 兜底"用, 绝大多数更新走不到, 顶层的 import 成本与
+#   与其他模块的耦合都没必要。函数内 import 是 Python 官方认可的写法。
+
+def _up_zip_guard():
+    """zip 兜底前的版本护栏 —— 返回 {'ok':True} 表示"远端确实更新，可以覆盖"。
+
+    为什么必须比版本：zip 覆盖是按文件内容逐字节替换，它不知道谁新谁旧。
+    自用版（没有 .git）通常比 GitHub 上那份还新（GitHub 是自己推上去的快照），
+    不比版本就覆盖 = 把本机较新的代码**降级**成远端旧版，而且没有任何提示。
+    """
+    try:
+        local = _ver.current()
+    except Exception:
+        local = ''
+    remote = ''
+    try:
+        _ri, _ie = _ver.remote_info_http()
+        remote = (_ri or {}).get('latest') or ''
+    except Exception:
+        remote = ''
+    cmp = ''
+    try:
+        cmp = _ver.compare(local, remote) if (local and remote) else ''
+    except Exception:
+        cmp = ''
+    if not remote:
+        return {'ok': False, 'changed': False, 'how': 'zip', 'before': '', 'after': '',
+                'version': local,
+                'msg': '查不到远端版本（网络/代理问题）—— 为避免把本机较新的代码覆盖成旧版，'
+                       '本次不执行 zip 覆盖。请检查网络后重试。'}
+    # ⚠ compare(local, remote) 的返回值是**远端视角**：
+    #   'newer' = 远端比我新（可以覆盖） / 'older' = 我比远端新（绝不能覆盖） / 'same'
+    if cmp != 'newer':
+        if cmp == 'older':
+            _why = ('本机 %s 比远端 %s 还新 —— 不做 zip 覆盖'
+                    '（按文件逐字节覆盖会把本机代码降级成远端旧版）' % (local, remote))
+        elif cmp == 'same':
+            _why = '已经是最新的（本机 %s / 远端 %s）—— 无需 zip 覆盖' % (local, remote)
+        else:
+            _why = '版本无法比较（本机 %s / 远端 %s）—— 不做 zip 覆盖' % (local, remote)
+        return {'ok': True, 'changed': False, 'how': 'zip', 'before': '', 'after': '',
+                'version': local, 'msg': _why}
+    return {'ok': True}
+
+
+def _up_rt_specs(paths):
+    """把 dirty 列表收成 git pathspec —— 用目录前缀覆盖同一目录下的整批文件。
+
+    `git status --porcelain` 会把 5,590 个 kline_data/daily/*.csv 逐行列出来,
+    直接把 5,590 个路径塞进 stash 命令行会超 Windows 32K 参数上限。
+    收到两级目录即可: kline_data/daily/SH600000.csv → kline_data/daily
+    """
+    out, seen = [], set()
+    for p in (paths or []):
+        pp = str(p or '').replace('\\', '/').strip()
+        if not pp:
+            continue
+        parts = [x for x in pp.split('/') if x]
+        if not parts:
+            continue
+        spec = '/'.join(parts[:2]) if len(parts) > 2 else '/'.join(parts)
+        if spec not in seen:
+            seen.add(spec)
+            out.append(spec)
+    return out[:80]          # 再兜一层, 免得极端情况下命令行过长
+
+
+def _up_zip_update(base, why=''):
+    """没有可用 git 时的兜底更新: 下载 GitHub 的 main.zip, **只覆盖代码文件**。
+
+    只动这些后缀: .py .html .js .vbs .ico .css (+ 根目录 VERSION)
+    绝不动:
+      quant_terminal/data_sources.json  —— 里面是真 Key(被 git 跟踪, 覆盖就把 Key 冲了)
+      quant_terminal/concept_blocklist.txt / watchlist.json —— 用户自己维护的配置
+      kline_data/ data_archive/ dragon_data/ 选股池/ —— 全部行情与归档数据
+      会话状态.md / *.bat —— 用户侧文档与启动脚本
+
+    被覆盖的原文件先整套备份到 <base>/_bak_zip_<时间戳>/ 下(保留相对路径),
+    万一新代码有问题, 用户能自己拷回去。
+    """
+    import zipfile
+    import tempfile
+
+    t0 = time.time()
+    url = 'https://codeload.github.com/%s/zip/refs/heads/main' % _ver.GH_REPO
+    try:
+        raw, err = _ver._http_get(url, timeout=180.0, tries=1)
+    except Exception as _e:
+        return {'ok': False, 'changed': False, 'how': 'zip', 'before': '', 'after': '',
+                'msg': '下载更新包失败（%s）：%s' % (why or '无 git', _e)}
+    if not raw:
+        return {'ok': False, 'changed': False, 'how': 'zip', 'before': '', 'after': '',
+                'msg': '下载更新包失败（%s）：%s' % (why or '无 git', err or '空响应')}
+
+    keep = ('.py', '.html', '.js', '.vbs', '.ico', '.css')
+    stamp = time.strftime('%Y%m%d_%H%M%S')
+    bak = os.path.join(base, '_bak_zip_%s' % stamp)
+    n_same = n_write = n_skip = 0
+    ver_new = ''
+    wrote = []
+    tmpd = tempfile.mkdtemp(prefix='bsking_up_')
+    old = b''
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+    except Exception as _e:
+        return {'ok': False, 'changed': False, 'how': 'zip', 'before': '', 'after': '',
+                'msg': '更新包解压失败：%s' % _e}
+    try:
+        names = zf.namelist()
+        for n in names:
+            nm = str(n or '').replace('\\', '/')
+            if nm.endswith('/'):
+                continue
+            low = nm.lower()
+            take = low.endswith(keep) or nm.upper().endswith('/VERSION') or nm.upper() == 'VERSION'
+            if not take:
+                continue
+            parts = [x for x in nm.split('/') if x]
+            if len(parts) < 2:
+                continue
+            rel = '/'.join(parts[1:])            # 去掉 "Open-BS-King-main/" 这一层
+            if '/' in rel:
+                if not rel.startswith('quant_terminal/'):
+                    n_skip += 1
+                    continue
+            elif rel.upper() != 'VERSION':
+                n_skip += 1
+                continue
+            if rel in ('quant_terminal/data_sources.json',):
+                n_skip += 1
+                continue
+            try:
+                data = zf.read(n)
+            except Exception:
+                n_skip += 1
+                continue
+            dst = os.path.join(base, rel.replace('/', os.sep))
+            try:
+                old = io.open(dst, 'rb').read()
+            except Exception:
+                old = b''
+            if old == data:
+                n_same += 1
+                continue
+            if old:
+                bdst = os.path.join(bak, rel.replace('/', os.sep))
+                bdir = os.path.dirname(bdst)
+                if bdir and not os.path.isdir(bdir):
+                    os.makedirs(bdir, exist_ok=True)
+                io.open(bdst, 'wb').write(old)
+            ddir = os.path.dirname(dst)
+            if ddir and not os.path.isdir(ddir):
+                os.makedirs(ddir, exist_ok=True)
+            tmp = dst + '.uptmp'
+            io.open(tmp, 'wb').write(data)
+            os.replace(tmp, dst)
+            n_write += 1
+            wrote.append(rel)
+            if rel.upper() == 'VERSION':
+                ver_new = data.decode('utf-8', 'replace').strip()
+    finally:
+        try:
+            zf.close()
+        except Exception:
+            pass
+        try:
+            shutil.rmtree(tmpd, ignore_errors=True)
+        except Exception:
+            pass
+
+    secs = round(time.time() - t0, 1)
+    if not n_write:
+        return {'ok': True, 'changed': False, 'how': 'zip', 'before': '', 'after': '',
+                'version': _ver.current(), 'n_write': 0, 'n_same': n_same,
+                'msg': '已经是最新的（zip 兜底：%d 个代码文件内容一致，用时 %s 秒）'
+                       % (n_same, secs)}
+    head = ', '.join(wrote[:6]) + (' …' if len(wrote) > 6 else '')
+    return {'ok': True, 'changed': True, 'how': 'zip', 'before': '', 'after': '',
+            'version': ver_new or _ver.current(), 'n_write': n_write, 'n_same': n_same,
+            'backup': bak, 'files': wrote[:40],
+            'msg': '已通过 zip 覆盖更新 %d 个代码文件（%s，用时 %s 秒）：%s —— 需要重启终端生效；'
+                   '原文件备份在 %s'
+                   % (n_write, why or '无 git', secs, head, bak)}
+
+
 def _do_git_pull():
-    """v2.340 (2026-11-18 用户 m25750): 一键更新 —— 在仓库目录跑 git pull。
+    """v2.351 (2026-11-20 用户 m35797/m35885): 一键更新 —— 三分类护栏 + merge-tree 预检 + zip 兜底。
 
-    为什么是 git pull 而不是「下载 zip 解压覆盖」：
-      覆盖式更新会把 VERSION 与代码分开更新，出现「版本号说更新了，界面还是老样子」，
-      这种半新半旧的状态最难查。git pull 要么整体成功要么整体不动。
+    为什么不再"有任何未提交改动就整体拒绝"（v2.340 的老逻辑）：
+      程序每天跑完都会改 kline_data/*.csv 与几个缓存 json，只要用过一次终端，
+      `git status` 就永远不干净 ⇒ 更新功能永久失效（测试机实测 18 个脏文件全是这类）。
 
-    三道护栏：
-      ① 不是 git 仓库（比如用户拿的是 zip 解压版）⇒ 直接告诉他去网页下载，不硬来
-      ② 本地有未提交改动 ⇒ 拒绝。那说明有人手改过文件，强拉会静默冲掉（本仓库无备份）
-      ③ 网络/代理问题 ⇒ 原样回传 git 的 stderr，不要包装成「未知错误」
+    现在的分类（判据见 version.classify_dirty）：
+      runtime —— 程序自己生成的行情/缓存/日志 ⇒ **自动 stash 后继续 pull**，
+                 pull 完再 pop 回来；pop 冲突就以远端为准并明确告知
+                 （那些数据下次「数据更新」会重新生成，不会真的丢）
+      config  —— 用户填过 Key 的配置（data_sources.json）⇒ 拒绝，并列出文件
+      source  —— 手改过的 .py/.html/.js ⇒ 拒绝，并附 merge-tree 三方预演结果，
+                 提前说清"会不会冲突"，而不是等 git pull 报一行天书
+      other   —— 其余保守拒绝
+
+    没有可用 git（没装 Git for Windows / 拿的是 zip 解压版）⇒ 走 zip 兜底：
+      只覆盖 quant_terminal/ 下的代码与根 VERSION，
+      data_sources.json 与全部数据目录一个字节都不动。
 
     返回 dict:
-      ok        True = 拉取成功
-      before    拉取前的提交 sha(短)
-      after     拉取后的提交 sha(短)
-      version   拉取后的 VERSION 内容
-      changed   True = 确实有新提交被拉下来（需要重启服务）
-      msg       给人看的结果说明
+      ok / changed / before / after / version / msg / how(git|zip) / 可选 stash / merge
     """
     import subprocess
 
     base = _ver.BASE_DIR
-    if not os.path.isdir(os.path.join(base, '.git')):
-        return {'ok': False, 'changed': False,
-                'msg': '这不是 git 副本（没有 .git 目录）—— 请到 GitHub 页面下载最新版覆盖'}
+    gexe, ghow = '', ''
+    try:
+        gexe, ghow = _ver.find_git()
+    except Exception:
+        gexe, ghow = '', ''
+    isrepo = os.path.isdir(os.path.join(base, '.git'))
+
+    if (not gexe) or (not isrepo):
+        why = ('本机找不到 git 命令' if not gexe else '这不是 git 副本（没有 .git 目录）')
+        # 🔴 v2.351e: zip 覆盖**必须先比版本**。
+        #   自用版就没有 .git（不是 git 副本），而它通常比远端还新（远端是自己推上去的快照）
+        #   ⇒ 不比版本就覆盖 = 把本机较新的代码降级成远端旧版，且没有任何提示。
+        guard = _up_zip_guard()
+        # 🔴 v2.351f: 判据必须是"明确允许覆盖" —— 护栏在"本机 >= 远端"时返回的
+        #   正是 ok=True/changed=False，只判 ok 会把这条当成放行，照样覆盖本机。
+        if (not guard.get('ok')) or (guard.get('changed') is False):
+            return guard
+        r = _up_zip_update(base, why)
+        r.setdefault('before', '')
+        r.setdefault('after', '')
+        return r
 
     def _git(*args, timeout=180):
         # 🔴 v2.342 (2026-11-18 用户 m26567): 必须带 CREATE_NO_WINDOW ——
         #   服务是 pythonw.exe 起的、自身无控制台，subprocess 起 git.exe 时 Windows
         #   会给新进程配一个终端窗口，屏幕上就是「黑窗一闪」。与 version.py 同一处根因。
-        return subprocess.run(['git', '-C', base] + list(args),
+        # v2.351: 可执行文件不再写死 'git', 改走 find_git() 的结果（PATH→安装目录→便携版）。
+        return subprocess.run([gexe, '-C', base] + list(args),
                               capture_output=True, text=True,
                               encoding='utf-8', errors='replace',
                               timeout=timeout,
                               creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
 
+    def _refuse(msg, **kw):
+        d = {'ok': False, 'changed': False, 'how': 'git', 'git': ghow,
+             'before': kw.pop('before', ''), 'after': kw.pop('before', ''), 'msg': msg}
+        d.update(kw)
+        return d
+
     try:
         before = (_git('rev-parse', '--short', 'HEAD').stdout or '').strip()
-        dirty = (_git('status', '--porcelain').stdout or '').strip()
-        if dirty:
-            n = len(dirty.splitlines())
-            return {'ok': False, 'changed': False, 'before': before, 'after': before,
-                    'msg': '本地有 %d 个文件未提交，已拒绝更新（强拉会冲掉它们）。'
-                           '请先执行 推送数据.bat 或告诉我们你想丢弃哪些改动' % n}
+
+        bk, bkerr = ({'runtime': [], 'config': [], 'source': [], 'other': [], 'n': 0}, '')
+        try:
+            bk, bkerr = _ver.dirty_breakdown()
+        except Exception as _e:
+            bkerr = str(_e)
+        if bkerr:
+            return _refuse('读取 git 状态失败：%s' % bkerr, before=before)
+
+        # ── ① config / source / other 一律拒绝（这些文件的内容是"人的决定"）──
+        if bk.get('config'):
+            return _refuse(
+                '本地有 %d 个配置文件被改过（%s）—— 里面可能填了 API Key，'
+                '自动更新会覆盖掉，已拒绝。请先手动备份/还原这些文件再更新。'
+                % (len(bk['config']), '、'.join(bk['config'][:5])),
+                before=before, dirty=bk)
+
+        if bk.get('source') or bk.get('other'):
+            mc = {}
+            try:
+                mc = _ver.merge_check()
+            except Exception as _e:
+                mc = {'ok': False, 'err': str(_e)}
+            names = (bk.get('source') or []) + (bk.get('other') or [])
+            tip = ''
+            if mc.get('ok'):
+                ov = mc.get('overlap') or []
+                cf = mc.get('conflicts') or []
+                if cf:
+                    tip = ('；三方预演：远端也改了 %d 个你改过的文件，其中 %d 个会**文本冲突**（%s）。'
+                           '直接 pull 必炸，得手工合并。'
+                           % (len(ov), len(cf), '、'.join(cf[:4])))
+                elif ov:
+                    tip = '；三方预演：远端也改了 %d 个你改过的文件（%s），但不同区域，可以自动合并。' % (
+                        len(ov), '、'.join(ov[:4]))
+                else:
+                    tip = '；三方预演：远端没有碰过你改的文件，冲突风险很低。'
+            elif mc.get('err'):
+                tip = '；三方预演没跑成（%s）' % str(mc.get('err'))[:120]
+            return _refuse(
+                '本地有 %d 个代码/其他文件被改过（%s）—— 强拉会静默冲掉它们，已拒绝%s。'
+                '请先 `推送数据.bat` 把你认可改动提交，或把这些文件还原后再更新。'
+                % (len(names), '、'.join(names[:6]), tip),
+                before=before, dirty=bk, merge=mc)
+
+        # ── ② runtime 类：自动 stash → pull → pop ──
+        specs = _up_rt_specs(bk.get('runtime') or [])
+        stashed = False
+        stash_msg = ''
+        if specs:
+            try:
+                n0 = len([x for x in (_git('stash', 'list').stdout or '').splitlines() if x.strip()])
+            except Exception:
+                n0 = 0
+            sr = _git('stash', 'push', '--include-untracked', '-m',
+                      'bsking-auto-update %s' % time.strftime('%m-%d %H:%M:%S'), '--', *specs)
+            try:
+                n1 = len([x for x in (_git('stash', 'list').stdout or '').splitlines() if x.strip()])
+            except Exception:
+                n1 = n0
+            # ⚠ 必须判"stash 条数真的变多了" —— `git stash push` 在没东西可存时
+            #   也返回 0, 这时候去 pop 会弹出**别人的旧 stash**, 是个很脏的 bug。
+            stashed = (n1 > n0)
+            if not stashed:
+                stash_msg = '（运行时文件没有实际改动，无需暂存）'
 
         r = _git('pull', '--ff-only', 'origin', 'main')
-        if r.returncode != 0:
-            return {'ok': False, 'changed': False, 'before': before, 'after': before,
-                    'msg': 'git pull 失败：' + ((r.stderr or r.stdout or '').strip()[:600])}
+        pulled_ok = (r.returncode == 0)
+
+        restored = ''
+        if stashed:
+            pr = _git('stash', 'pop', timeout=120)
+            if pr.returncode == 0:
+                restored = '；本地运行时数据已还原'
+            else:
+                # pop 冲突（同一批 csv 两边都追加了行）⇒ 以远端为准
+                try:
+                    _git('checkout', 'HEAD', '--', *specs, timeout=120)
+                except Exception:
+                    pass
+                try:
+                    _git('stash', 'drop', timeout=60)
+                except Exception:
+                    pass
+                restored = '；本地运行时数据与远端冲突，已按远端为准（下次「数据更新」会重新生成）'
+
+        if not pulled_ok:
+            if stashed:
+                # pull 失败也要把用户的数据还回去
+                try:
+                    _git('stash', 'pop', timeout=120)
+                except Exception:
+                    pass
+            return _refuse('git pull 失败：' + ((r.stderr or r.stdout or '').strip()[:600]),
+                           before=before)
 
         after = (_git('rev-parse', '--short', 'HEAD').stdout or '').strip()
+        try:
+            _ver.code_state(force=True)
+        except Exception:
+            pass
         after_ver = _ver.current()
         changed = (before != after)
 
@@ -2304,14 +2607,24 @@ def _do_git_pull():
             msg = '已从 %s 更新到 %s（当前版本 %s）—— 需要重启终端生效' % (before, after, after_ver)
         else:
             msg = '已经是最新的（%s / %s）' % (after, after_ver)
-        return {'ok': True, 'changed': changed, 'before': before, 'after': after,
-                'version': after_ver, 'msg': msg}
+        if bk.get('runtime'):
+            msg += '；自动暂存并处理了 %d 个运行时文件%s%s' % (
+                len(bk['runtime']), stash_msg, restored)
+        return {'ok': True, 'changed': changed, 'how': 'git', 'git': ghow,
+                'before': before, 'after': after, 'version': after_ver, 'msg': msg,
+                'dirty': bk}
     except subprocess.TimeoutExpired:
-        return {'ok': False, 'changed': False, 'msg': 'git pull 超时（180 秒），请检查网络或梯子'}
+        return {'ok': False, 'changed': False, 'how': 'git',
+                'msg': 'git pull 超时（180 秒），请检查网络或梯子', 'before': ''}
     except FileNotFoundError:
-        return {'ok': False, 'changed': False, 'msg': '本机找不到 git 命令，请先安装 Git for Windows'}
+        r = _up_zip_update(base, 'git 可执行文件消失了')
+        r.setdefault('before', '')
+        r.setdefault('after', '')
+        return r
     except Exception as e:
-        return {'ok': False, 'changed': False, 'msg': '更新时出错：%s' % e}
+        return {'ok': False, 'changed': False, 'how': 'git', 'before': '',
+                'msg': '更新时出错：%s' % e}
+
 
 def get_trading_status():
     now = datetime.now()
@@ -6811,6 +7124,7 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
             #   🔴 本地有未提交改动时**拒绝执行**：那说明用户手改过文件，
             #      强拉会把改动冲掉（这个仓库没有备份机制）。
             if path == '/api/version/pull':
+                # v2.351: 返回里 how='git'|'zip', 前端据此说不同的重启提示
                 self._json(_do_git_pull())
                 return
             # v2.349 (2026-11-20 用户 m29038): 悬停分时**批量**拉取 —— 前端攒 200ms 或满 40 个

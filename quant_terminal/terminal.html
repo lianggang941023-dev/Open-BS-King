@@ -7694,9 +7694,13 @@ async function renderDSWin(){
     +'<div style="display:flex;align-items:center;gap:8px;font-size:9px;color:var(--tx2)">'
     +'<span>版本 <b id="ds-ver-cur" style="color:var(--gold);font-size:10px">—</b></span>'
     +'<span id="ds-ver-build" style="color:var(--tx3)"></span>'
+    // v2.351h (2026-11-20 用户 m35797): 把「有没有 git / 走哪条通道」直接写在版本行上。
+    //   测试机没装 Git for Windows, 以前只会在点「更新版本」时才报「找不到 git」;
+    //   现在一眼就能看到本机是「git 可用」还是「无 git · 走 zip 覆盖」。
+    +'<span id="ds-ver-git" style="color:var(--tx3);font-size:9px"></span>'
     +'<span style="flex:1"></span>'
-    +'<button class="btn sm" onclick="dsVerCheck(1)" style="font-size:9px" title="去 GitHub 查有没有新版本">检查更新</button>'
-    +'<button class="btn sm" onclick="dsVerPull()" style="font-size:9px" title="git pull 拉最新代码 (本地有未提交改动会被拒绝)">更新版本</button>'
+    +'<button class="btn sm" onclick="dsVerCheck(1)" style="font-size:9px" title="去 GitHub 查有没有新版本 (优先走 HTTP, 不需要本机装 git)">检查更新</button>'
+    +'<button class="btn sm" onclick="dsVerPull()" style="font-size:9px" title="有 git 且是 git 副本 → git pull; 否则 → 下载 GitHub zip 只覆盖代码文件 (data_sources.json 与 K 线数据一律不动)">更新版本</button>'
     +'</div>'
     +'<div id="ds-ver-msg" style="font-size:9px;color:var(--tx3);padding:3px 0 0;line-height:14px">正在读取版本…</div>'
     +'</div>';
@@ -7726,8 +7730,41 @@ function dsVerPaint(d){
   var cur=$('ds-ver-cur'), bd=$('ds-ver-build'), msg=$('ds-ver-msg');
   if(!cur) return null;
   cur.textContent=d.version||'—';
-  if(bd){ bd.textContent=d.build?('构建 '+d.build):'';
-    if(d.build) bd.title='这份代码的打包日期 —— 更新后还是旧日期说明没重启'; }
+  // v2.350 (2026-11-20 用户 m35653/m35674「全自动」):
+  //   原来这里是 `构建 <写死的常量 2026-11-18>`, 半年没变过, 用户以为改动没生效。
+  //   改成显示**代码实况**: 最大 v2.NNN 标记 + 这批文件最后的修改时间。
+  //   我改完任何一个文件, 打开设置就是新时间 —— 这才是"改动生效了"的证据。
+  if(bd){
+    var c=d.code||{}, bt='';
+    if(c.ver||c.mtime_str){
+      bt='代码 '+(c.ver||'—')+(c.mtime_str?(' · '+c.mtime_str):'');
+      bd.textContent=bt;
+      bd.title='自动扫描 quant_terminal 下 '+((c.n_files||0))+' 个 .py/.html, 取最大的 v2.NNN 标记与最后修改时间'
+              +(c.file?(' / 最近改动: '+c.file):'')+' / 耗时 '+((c.secs||0))+' 秒';
+    }else if(d.build){
+      bd.textContent='构建 '+d.build;
+      bd.title='这份代码的打包日期 —— 更新后还是旧日期说明没重启';
+    }else{ bd.textContent=''; }
+  }
+  // v2.351h: git 通道实况 —— 决定点「更新版本」时走 git pull 还是 zip 覆盖。
+  var gt=$('ds-ver-git');
+  if(gt){
+    var g=d.git||{}, rok=(d.repo_ok===true);
+    if(g.ok && rok){
+      gt.textContent='· git 副本';
+      gt.style.color='var(--tx3)';
+      gt.title='本机 git: '+(g.path||'')+(g.how?(' ('+g.how+')'):'')+'\n「更新版本」用 git pull —— 本地未提交的运行时数据会自动暂存再还原';
+    }else if(g.ok && !rok){
+      gt.textContent='· 无 .git · 走 zip 覆盖';
+      gt.style.color='var(--orange)';
+      gt.title='本机 git: '+(g.path||'')+(g.how?(' ('+g.how+')'):'')
+              +'\n但这份代码不是 git 副本(没有 .git 目录) ⇒ 「更新版本」会下载 GitHub zip, 只覆盖 .py/.html 等代码文件';
+    }else{
+      gt.textContent='· 无 git · 走 zip 覆盖';
+      gt.style.color='var(--orange)';
+      gt.title='本机找不到 git 命令 —— 不影响「检查更新」(走 HTTP)\n「更新版本」会下载 GitHub zip, 只覆盖 .py/.html 等代码文件; data_sources.json 与 kline_data 一律不动';
+    }
+  }
   return msg;
 }
 function dsVerCheck(force){
@@ -7737,8 +7774,10 @@ function dsVerCheck(force){
     if(!d||d._err){ if(msg){msg.style.color='var(--red)';msg.textContent='检查失败: '+((d&&d._err)||'未知');} return; }
     if(!msg) return;
     var st=d.status||'unknown';
+    // v2.351h: 带上通道来源 —— 排查「查不到版本」时先看是 HTTP 还是 git 出的问题
+    var _src=d.src?(' · '+(d.src==='git'?'git':('HTTP '+String(d.src).replace(/^http:/,'')))):'';
     if(st==='same'){ msg.style.color='var(--tx2)';
-      msg.textContent='已是最新（本地 '+d.local+' / 远端 '+d.remote+'）';
+      msg.textContent='已是最新（本地 '+d.local+' / 远端 '+d.remote+'）'+_src;
     }else if(st==='newer'){ msg.style.color='var(--gold)';
       msg.textContent='发现新版本 '+d.remote+'（本地 '+d.local+'）—— 点「更新版本」拉取';
     }else if(st==='older'){ msg.style.color='var(--orange)';
@@ -7750,13 +7789,22 @@ function dsVerCheck(force){
 function dsVerPull(){
   var msg=$('ds-ver-msg');
   if(msg){ msg.style.color='var(--tx3)'; msg.textContent='正在拉取…（最长 3 分钟）'; }
-  api('/api/version/pull',{method:'POST'}).then(function(d){
+  // 🔴 v2.351j: 这里原来写的是 api('/api/version/pull',{method:'POST'}) ——
+  //   api() 只有一个参数, method 被静默丢掉, 实际发的是 GET ⇒ 路由是 POST-only ⇒ 404 ⇒
+  //   界面永远只显示「更新失败」, 且 404 的 body 能被 json 解析, 连原因都看不出来。
+  //   这个 bug 从 v2.340 起就在。POST 一律用 post(p,b)。
+  post('/api/version/pull',{}).then(function(d){
     if(!d||d._err){ if(msg){msg.style.color='var(--red)';msg.textContent='更新失败: '+((d&&d._err)||'未知');} return; }
     if(!msg) return;
     msg.style.color = d.ok? (d.changed?'var(--gold)':'var(--tx2)') : 'var(--red)';
     msg.textContent = d.msg || (d.ok?'已是最新':'更新失败');
-    if(d.ok && d.changed){ msg.textContent += '  —— 请关闭终端后重新双击启动';
-      setTimeout(function(){ dsVerCheck(0); }, 800); }
+    if(d.ok && d.changed){
+      // v2.351h: 两条通道重启说法不同 —— zip 覆盖是一堆文件被逐个替换过, 更要说清
+      msg.textContent += (d.how==='zip')
+        ? '  —— 已按 zip 覆盖代码文件, 请关闭终端后重新双击启动'
+        : '  —— 请关闭终端后重新双击启动';
+      setTimeout(function(){ dsVerCheck(0); }, 800);
+    }
   });
 }
 function dsVerInit(){
