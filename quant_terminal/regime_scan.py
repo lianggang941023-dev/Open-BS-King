@@ -635,15 +635,11 @@ def _mainline_rows(days, force=False, kind='concept'):
         groups = _br._groups(kind, 2)
     except Exception:
         return []
-    # v2.312 (2026-11-14 用户 m18508「查漏补缺」): 主线排行必须按**成分股家数**过滤。
-    #   TSP market_mainline._resolve_filter_config() 默认 min_members=4 / max_members=600,
-    #   compute_mainline_range 里先 group_by(kind).len() 再 semi join 掉越界板块, 理由是
-    #   「宽基/风格标签(融资融券/沪深股通等数千成分)按成员数上限过滤」。
-    #   不这么做的话「芯片概念(940 只)」「储能(908)」「一带一路(800)」这类超级宽基
-    #   天天霸榜 —— 实测 2026-11-13 未过滤第 1 名是「芯片概念」(8 家涨停), 而 TSP 里
-    #   同样是这一天, 第 1 名是「长安汽车概念」(5 家), 两边对不上就是这个原因。
-    #   本地 concept map 成员数 min7/中位89/max940, 4~600 过滤后 351 → 341 个板块;
-    #   industry 257 → 242(剔掉 15 个成员 <4 的极小行业)。过滤后前 10 名与 TSP 基本一致。
+    # v2.312（用户 m18508「查漏补缺」）：主线排行必须按**成分股家数**过滤。TSP 默认 min_members=4 /
+    #   max_members=600，先 group_by(kind).len() 再 semi join 掉越界板块，理由是「宽基/风格标签（融资
+    #   融券/沪深股通等数千成分）按成员数上限过滤」。不过滤则「芯片概念(940 只)」「储能(908)」这类超级
+    #   宽基天天霸榜（实测 2026-11-13 未过滤第 1 名是「芯片概念」8 家涨停，而 TSP 同日第 1 名是
+    #   「长安汽车概念」5 家）。本地 concept 成员数 min7/中位89/max940，过滤后 351→341；industry 257→242。
     rp = regime_phase()
     _fl = rp.MAINLINE_FILTER
     _mn = int(_fl.get('min_members') or 1)

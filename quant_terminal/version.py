@@ -30,17 +30,14 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSION_FILE = os.path.join(BASE_DIR, 'VERSION')
 
 # 更新检查的远端：git 协议是唯一稳定可用的通道。
-#   🔴 2026-11-18 实测（本机 + 用户梯子）：
-#     github.com                 直连 200 / 1.8s     ← 只有它通
-#     api.github.com             直连 000 / 代理 000  ← 被墙
-#     raw.githubusercontent.com  直连 000 / 代理 000  ← 被墙（/raw/ 走的也是它）
-#   所以只能用 `git ls-remote` / `git fetch`（走 github.com:443 的 git 协议）。
-#   好消息：远端 HEAD 的提交标题里就写着版本号（约定见下），不必单独取 VERSION 文件。
+#   2026-11-18 实测：github.com 直连 200/1.8s（只有它通）；
+#   api.github.com 与 raw.githubusercontent.com 直连/代理都是 000（被墙）。
+#   ⇒ 只能用 `git ls-remote` / `git fetch`（走 github.com:443）。
+#   远端 HEAD 的提交标题里就写着版本号，不必单独取 VERSION 文件。
 #
-# 提交标题约定（**发版时必须遵守**）：
-#   提交信息以 `v2.NNN` 或 `v2.NNNa/b` 开头，例：
-#     "v2.341 修 xxx"  "v2.341a 补 xxx"
-#   check_update() 用正则从远端 HEAD 的标题里抠这个号；抠不到就退一步读远端 VERSION 文件。
+# 提交标题约定（**发版时必须遵守**）：提交信息以 `v2.NNN` 或 `v2.NNNa/b` 开头，
+#   例 "v2.341 修 xxx" / "v2.341a 补 xxx"。
+#   check_update() 先用正则从远端 HEAD 标题抠号，抠不到退一步读远端 VERSION 文件。
 GH_REPO = 'lianggang941023-dev/Open-BS-King'
 GH_URL = 'https://github.com/%s.git' % GH_REPO
 GH_PAGE = 'https://github.com/%s' % GH_REPO
@@ -98,25 +95,15 @@ def compare(local, remote):
     return 'older'
 
 
-# 网络通道清单（按顺序尝试，第一个成功就用）
-#   🔴 2026-11-18 实测：github.com 直连正常但会被 GFW 间歇性 reset(Connection was reset /
-#      Could not connect after 21s)；用户梯子常开，socks5 1080 有时比直连稳，有时反之。
-#      所以两条都试，谁先通算谁 —— 不要写死"直连优先"或"代理优先"，网络状况是变的。
-#
-#   🔴 2026-11-18 晚 再测：同一条 ls-remote，直连 **27.29 秒后 Recv failure: Connection was
-#      reset**，代理 **1.13 秒成功**。差了两个数量级，而且直连那次是白等 27 秒。
-#      用户梯子常开是既定事实，所以把代理提到第一位：通了立刻返回（1 秒级），
-#      代理没开/不通才回落直连（慢，但总比查不了强）。
+# 网络通道清单（按顺序尝试，第一个成功就用）。**代理优先，直连兜底。**
+#   2026-11-18 晚实测同一条 ls-remote：直连 27.29 秒后 Recv failure: Connection was reset，
+#   代理 1.13 秒成功 —— 差两个数量级，且直连那次是白等。用户梯子常开是既定事实。
 _PROXY = 'socks5://127.0.0.1:1080'
 
 # 🔴 v2.342 (2026-11-18 用户 m26567): 必须带 CREATE_NO_WINDOW，否则每跑一次 git
 #   就会**弹一个黑窗口闪一下**。根因：服务是 pythonw.exe 起的、本身没有控制台，
-#   subprocess 起 git.exe 时 Windows 会为这个「没有控制台的新进程」配一个终端，
-#   于是屏幕上闪出 Windows Terminal（实测 EnumWindows 能抓到
-#   `CASCADIA_HOSTING_WINDOW_CLASS / 'Terminal'`，一闪就没）。
-#   ✓ 实测：加了这个 flag 之后控制台窗口 0 个（见 _selftest_console()）。
-#   ⚠ 同时 sync 里的 `subprocess.run(['git',...])` 与 server.py 的 `_do_git_pull`
-#     也必须加，三处缺一处就还会闪。
+#   subprocess 起 git.exe 时 Windows 会为这个「没有控制台的新进程」配终端。
+#   ⚠ server.py 的 `_do_git_pull` 与两个 `_run_and_track` 也必须加，缺一处就还会闪。
 _NO_WIN = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
 

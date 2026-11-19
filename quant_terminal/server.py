@@ -151,15 +151,13 @@ SCAN_STATE = {
 }
 
 # ============================================================
-# v2.53 (2026-09-05): 选股结果落盘 — 按(池×模式)分槽, 单击看上次/双击重扫
-# v2.107 (2026-09-23): 键加**第三维「均线档位」** —— 每个 (池 × 模式 × 档位) 各有独立存档点。
-#   切档位 = 换一份已落盘的结果来看, **绝不触发扫描**; 数据一直保留到下次手动双击扫描覆盖它。
-# scan_cache.json: {fmt:2, updated_at, px_updated_at, last:{pool,mode,lines},
-#                   slots:{pool:{mode:{lines:槽}}}}
-#   槽 = {'mode','pool','lines','scan_time','ts','total_results','results':[summarize后行]}
-#   ⚠️ 旧结构 slots:{pool:{mode:槽}} (无档位维) 读入时由 _migrate_scan_cache 就地无损升级
-#   ⚠️ SCAN_SCHEMA 是**行形状版本**(ai 五灯→涨停突破改造), 与本次「槽键结构」无关, 一个字不动
-# 板块热度 sector_hot.json: {ts, source, sectors[]} — 平时读盘, force=1 才现拉腾讯 (防限流)
+# v2.53：选股结果落盘 — 按(池×模式)分槽，单击看上次/双击重扫
+# v2.107：键加**第三维「均线档位」** —— 每个 (池 × 模式 × 档位) 各有独立存档点。
+#   切档位 = 换一份已落盘的结果来看，**绝不触发扫描**；数据保留到下次手动双击扫描覆盖它。
+# scan_cache.json: {fmt:2, updated_at, px_updated_at, last:{pool,mode,lines}, slots:{pool:{mode:{lines:槽}}}}
+#   槽 = {mode,pool,lines,scan_time,ts,total_results,results[]}；旧结构 slots{pool:{mode:槽}} 由 _migrate_scan_cache 无损升级
+#   ⚠ SCAN_SCHEMA 是**行形状版本**，与本次「槽键结构」无关，一个字不动
+# 板块热度 sector_hot.json: {ts, source, sectors[]} — 平时读盘，force=1 才现拉腾讯(防限流)
 # ============================================================
 SCAN_CACHE_FILE = os.path.join(BASE_DIR, 'quant_terminal', 'scan_cache.json')
 SECTOR_HOT_FILE = os.path.join(BASE_DIR, 'quant_terminal', 'sector_hot.json')
@@ -168,21 +166,15 @@ _LIMIT20_CACHE: Dict[str, tuple] = {}
 
 
 # ============================================================
-# v2.170 (2026-10-21) 三源轮换实时行情 —— 用户 m00787 定案的「停哪页刷哪页」
+# v2.170 三源轮换实时行情 —— 用户定案「停哪页刷哪页」
 # ------------------------------------------------------------
-# 需求: 不管停在哪个选股模式或板块下钻的列表, 定时刷新该列表的现价与涨跌幅;
-#       同花顺 → 腾讯 → 新浪 轮流上 —— 每 30 秒换一家(v2.232 起, 原来 5 秒一刷 15 秒一换,
-#       同花顺一天被限流 100 多次, 连累 15:35 的板块更新被 429 打挂)。
-# 设计要点:
-#   · 换源节奏放**服务端进程内**的 30 秒时间片, 不靠前端计数: 前端刷页面/开多标签页/
-#     热榜补价 都共享同一条时间轴, 不会因为重开页面就从同花顺重新连打。
-#   · 选中的源失败 → 立刻顺延下一个源(一轮最多 3 家), 但游标照样前进, 不给坏源
-#     攒重试的机会。
-#   · 持仓恒定带上: 模拟盘 positions 的代码并入本次请求, 单独放 holds 返回,
-#     前端只刷持仓面板的数字, **不插进当前列表**(用户定案)。
-#   · 失败/限流写 quote_cycle.log, 事后能查是哪家、哪一刻限的。
-# 口径: 三源统一输出 {前缀码: {price, pct, prev, open, high, low, vol(手)}}
-#       新浪量=股 → ÷100; 同花顺源内已 ÷100; 腾讯本来就是手。
+# 同花顺 → 腾讯 → 新浪 轮流上，每 30 秒换一家(v2.232 起；原来 5 秒一刷 15 秒一换，同花顺一天被限流
+#   100 多次，连累 15:35 的板块更新被 429 打挂)。
+# 换源节奏放**服务端进程内**的 30 秒时间片，不靠前端计数 —— 刷页面/开多标签页/热榜补价共享同一条时间轴，
+#   不会因为重开页面就从同花顺重新连打。选中的源失败 → 立刻顺延下一家(一轮最多 3 家)，游标照样前进。
+# 持仓恒定带上: 模拟盘 positions 并入本次请求，单独放 holds 返回，前端只刷持仓面板数字、**不插进当前列表**。
+#   失败/限流写 quote_cycle.log，事后能查是哪家、哪一刻限的。
+# 口径: 三源统一输出 {前缀码: {price,pct,prev,open,high,low,vol(手)}}；新浪量=股→÷100，同花顺源内已 ÷100。
 # ============================================================
 _QC_SOURCES = ('fuyao', 'tencent', 'sina')
 _QC_SLOT = 30.0                           # v2.232: 每一个源连续用 30 秒, 满 30 秒才换下一家
@@ -374,15 +366,12 @@ def quote_cycle(codes):
     holds = [c for c in _qc_hold_codes() if c not in pres]
     ask = pres + holds
 
-    # v2.232 (2026-10-26 用户 m09422): 从「来一个请求就换下一家」改成**按 30 秒时间片换源**。
-    #   原来清单每 5 秒刷一次, 同花顺每 15 秒就被打一次, 盘中经常被限流 —— quote_cycle.log
-    #   里一天 105 次失败(SSL 握手超时 / Remote end closed / 429)。限流还会连累自动任务:
-    #   15:35 那次就是被 429 打挂, 板块指数当天那根差点漏写(2026-10-26 手工补的)。
-    #   现在时间片 = int(epoch / 30), 30 秒内的所有请求共用同一家, 满 30 秒才换下一家。
-    #   ★ 用时间片而不是「请求计数」的好处: 多标签页、热榜补价这些旁路请求也走同一条时间轴,
-    #     不会有人偷偷把游标推进, 你看到的「现在是哪一家」在任何页面都一致。
-    #   ★ 同一时间片内某家已经失败过就记进 bad, 后续请求直接跳过它(免得 30 秒里连撞 6 次
-    #     十几秒的超时, 把整页刷价拖死), 下一片清空重新给机会。
+    # v2.232（用户 m09422）：从「来一个请求就换下一家」改成**按 30 秒时间片换源**。原来清单每 5 秒
+    #   刷一次、同花顺每 15 秒被打一次，盘中经常被限流（quote_cycle.log 一天 105 次失败），还连累
+    #   15:35 的自动任务被 429 打挂。现在时间片 = int(epoch/30)，30 秒内所有请求共用同一家。
+    #   ★ 用时间片而非「请求计数」：多标签页、热榜补价这些旁路请求也走同一条时间轴，不会有人偷偷
+    #     把游标推进，任何页面看到的「现在哪一家」都一致。
+    #   ★ 同一片内某家失败过就记进 bad、后续跳过（免得 30 秒里连撞 6 次超时把整页刷价拖死），下一片清空重试。
     with _QC_LOCK:
         _slot = int(time.time() // _QC_SLOT)
         if _QC_STATE.get('slot') != _slot:
@@ -2525,20 +2514,14 @@ def _bank_cache_write(d):
 
 
 # ============================================================
-# v2.239 (2026-10-29 用户 m13487): 浮窗分时 —— 同花顺官方分时
+# v2.239（用户 m13487）：浮窗分时 —— 同花顺官方分时
 # ============================================================
-# 🔴 为什么是 d.10jqka.com.cn, 而不是同花顺 API 网关 (fuyao.aicubes.cn):
-#   网关的 /prices/minute /intraday /timeline /tick 全部 404,
-#   /prices/historical 的 interval 只认 '1d' —— **它不提供分时**。
-#   而同花顺**网页图表**用的这个域名给的就是官方分时原始数据:
-#     · 不需要 key、不需要 Referer
-#     · 一个请求 241 点 / 约 0.45 秒, 耗时与成分股数量**完全无关**
-#       (融资融券 3889 只成分股也是 0.45 秒 —— 因为它不是合成的)
-#     · 与官方快照逐项全等: 实测 4 个标的 开/高/低/收 差 0.0000
-#   ⇒ 板块/概念分时**不再需要**用成分股等权合成; v2.238 的 _tx_composite 只当降级兜底。
-#
-# 代码格式: 板块指数/概念 '48_884176'、创业板/科创板等指数也是 48_、个股 'hs_600519'。
-#   顶部 7 个大盘指数走不了这条 (10jqka 不认 sh000001 这类), 继续用腾讯 fetch_minute。
+# 🔴 为什么是 d.10jqka.com.cn，不是同花顺 API 网关(fuyao.aicubes.cn)：
+#   网关的 /prices/minute /intraday /timeline /tick 全部 404，/prices/historical 只认 interval='1d'
+#   —— **它不提供分时**。而这个域名给的是同花顺网页图表用的官方原始分时：不需要 key/Referer，
+#   一次 241 点约 0.45 秒，耗时与成分股数量**完全无关**（融资融券 3889 只也是 0.45 秒，因为不是合成的），
+#   与官方快照开/高/低/收差 0.0000。⇒ 板块分时**不再需要**成分股等权合成，v2.238 的 _tx_composite 只当降级兜底。
+# 代码格式：板块/概念/创科指数 '48_884176'，个股 'hs_600519'。顶部 7 个大盘指数走不了这条，仍用腾讯。
 _THS_TIME_URL = 'https://d.10jqka.com.cn/v6/time/{code}/{kind}.js'
 _THS_DAY_URL = 'https://d.10jqka.com.cn/v6/line/{code}/01/today.js'
 _THS_UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -2548,9 +2531,15 @@ _THS_UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 #   前端还有一层 localStorage (见 terminal.html 的 BANK_LS), 这里负责重启后也能秒回。
 _MINI_MEM = {}                       # 'kind:code' -> {'ts': epoch, 'd': {...}}
 _MINI_TTL = 20                       # 秒: 同一只票 20 秒内重复悬停不再打网络
-_MINI_MAX = 300                      # 内存条数上限, 防止长跑无限涨
+_MINI_MAX = 1200                     # 内存条数上限, 防止长跑无限涨
+# v2.349 (用户 m29038): 300 → 1200。悬停改成批量预取后, 一次整页就是 30 条,
+#   300 条不到十分钟就被挤光, 被挤掉的又得重拉 —— 上限太小会让预取白干。
+#   1200 条约 8.4 MB(memory), 对这个进程可以忽略。
 _MINI_FILE = str(BASE_DIR / 'kline_data' / 'mini_minute_cache.json')
 _MINI_KEEP = 86400                   # 磁盘留一天: 隔夜的旧分时没意义
+# v2.349: 批量拉取计数 —— >0 时 mini_minute **不逐只写盘**(30 只 = 30 次全量 JSON 落盘),
+#   由 mini_minute_batch 在整批结束时统一写一次。用列表而不是普通 int, 免得拆包赋值。
+_MINI_DEFER = [0]
 
 
 def _ymd8(s):
@@ -2878,8 +2867,80 @@ def mini_minute(kind, code, ttl=_MINI_TTL):
         _drop = sorted(_MINI_MEM.items(), key=lambda kv: float(kv[1].get('ts') or 0))
         for _dk, _dv in _drop[:len(_MINI_MEM) - _MINI_MAX]:
             _MINI_MEM.pop(_dk, None)
-    _mini_disk_save()
+    if not _MINI_DEFER[0]:              # v2.349: 批量期间攒到整批结束再写
+        _mini_disk_save()
     return out
+
+
+def mini_minute_batch(items, ttl=_MINI_TTL, workers=8):
+    """v2.349 (2026-11-20 用户 m29038): 一次拿多只浮窗分时。
+
+    items: ['stock:600000', 'sector:半导体', 'index:sh000001'] —— **就是前端的缓存键**
+    返回  {ok, items:{key: <mini_minute 的原样返回>}, n_ok, n_all, elapsed}
+
+    内部**直接调 mini_minute** —— 四层缓存、失败沿用旧数据、脏数据不覆盖好的, 全走原路,
+    不重写取数逻辑。单只失败只影响它自己(那一条塞 {'ok':False,...})。
+
+    并发为什么是 8: 实测 16/24 并发并不比 8 快(上游腾讯限速), 8 既快又不把上游打疼。
+    单批上限 60 —— 前端自己按 40 一批切, 这里再兜一道防止有人手拼超大请求。
+    """
+    t0 = time.time()
+    out = {}
+    keys = []
+    for it in (items or []):
+        s = str(it or '').strip()
+        if not s or ':' not in s:
+            continue
+        _k, _c = s.split(':', 1)
+        _k = _k.strip().lower()
+        _c = _c.strip()
+        if _k not in ('sector', 'stock', 'index') or not _c:
+            out[s] = {'ok': False, 'error': 'kind 只认 sector/stock/index 或 code 为空',
+                      'lines': []}
+            continue
+        if s not in keys:
+            keys.append(s)
+    keys = keys[:60]
+
+    def _one(k):
+        kind, code = k.split(':', 1)
+        try:
+            return k, mini_minute(kind, code, ttl=ttl)
+        except Exception as _e:                      # 单只炸了不许拖垮整批
+            _swlog('mini_batch_' + kind, _e)
+            return k, {'ok': False, 'error': str(_e)[:160], 'lines': []}
+
+    if keys:
+        _MINI_DEFER[0] += 1
+        try:
+            # v2.349b: 本模块顶层没有 import ThreadPoolExecutor(只在 _tx_composite 里局部 import 过),
+            #   不补这一行 ⇒ 批量接口恒返 {ok:false, error:'name ThreadPoolExecutor is not defined'},
+            #   而 HTTP 还是 200、界面表现是「取数失败」—— 又一个静默坑。
+            from concurrent.futures import ThreadPoolExecutor as _TPE2
+            with _TPE2(max_workers=min(workers, len(keys))) as ex:
+                for _k2, _d2 in ex.map(_one, keys):
+                    out[_k2] = _d2
+        finally:
+            _MINI_DEFER[0] = max(0, _MINI_DEFER[0] - 1)
+            if not _MINI_DEFER[0]:
+                _mini_disk_save()
+            # v2.349c: 失败项串行重试一次。
+            #   实测 20 个板块一批 = 8 并发 × 2(主图+上级) = 16 个并发打同花顺, 偶发
+            #   `HTTP Error 502: Bad Gateway`, 一次能坏 5/20 条 ⇒ 前端全显示「取数失败」。
+            #   串行 + 间隔基本不再撞; 只有真失败才走这条路, 不拖慢正常批。
+            _bad = [k for k in keys
+                    if not (isinstance(out.get(k), dict) and out.get(k, {}).get('ok'))]
+            for _k3 in _bad:
+                time.sleep(0.12)
+                try:
+                    _k4, _d4 = _one(_k3)
+                    if isinstance(_d4, dict) and _d4.get('ok'):
+                        out[_k4] = _d4
+                except Exception:
+                    pass
+    n_ok = sum(1 for _d in out.values() if isinstance(_d, dict) and _d.get('ok'))
+    return {'ok': True, 'items': out, 'n_ok': n_ok,
+            'n_all': len(out), 'elapsed': round(time.time() - t0, 3)}
 
 
 def _mini_test():
@@ -3059,19 +3120,14 @@ def fetch_minute(sc):
 
 
 # ============================================================
-# v2.116 (2026-09-25): AI 对话窗口的**工具执行器**
+# v2.116：AI 对话窗口的**工具执行器**
 # ============================================================
-# 模型点哪个工具, 这里就跑哪个, 返回**给模型读的纯文本** (不是 JSON —— 它要的是
-# 能直接引用的数字, 包一层结构反而更容易被它读岔)。
-# 🔒 取数一律复用终端现成函数 (fetch_sina / load_csv_kline / _load_stock_names /
-#    analyze_sector_ma / analyze_concept_ma)。另起炉灶的话 "AI 说的" 会和
-#    "终端显示的" 对不上, 那比查不到更糟。
-# v2.119: 加第 6 个 get_news —— 前 5 个全是行情数据, 新闻一条路都没有。
-# v2.120: 6 → 11 —— 面板上看得见的每一块都够得着 (扫描结果/情绪/模拟盘/自选/
-#   基本面/分时)。🔴 **按"用户会怎么问"打包, 不是一个端点一个工具**:
-#   每份 schema 都进每次请求的上下文, 工具太多模型反而挑错。
-#   get_index → **get_market** (指数 + 市场情绪, 本来就是同一个问题);
-#   get_sector 加 kind 参数 (trend/kline/breakout), 仍是一个工具。
+# 模型点哪个工具这里就跑哪个，返回**给模型读的纯文本**（不是 JSON —— 它要能直接引用的数字，包一层结构反而读岔）。
+# 🔒 取数一律复用终端现成函数（fetch_sina / load_csv_kline / _load_stock_names / analyze_sector_ma /
+#   analyze_concept_ma）。另起炉灶的话「AI 说的」会和「终端显示的」对不上，那比查不到更糟。
+# v2.119 起 11 个工具：行情/扫描/情绪/模拟盘/自选/基本面/分时/新闻都够得着。
+# 🔴 **按「用户会怎么问」打包，不是一个端点一个工具** —— 每份 schema 都进每次请求上下文，工具太多模型反而挑错。
+#   get_index 合并成 get_market（指数+情绪本是同一个问题）；get_sector 用 kind 参数分摊(仍是一个工具)。
 _AI_TOOL_NAMES = ('search_stock', 'get_realtime', 'get_kline', 'get_sector',
                   'get_market', 'get_news', 'get_scan', 'get_sim',
                   'get_watchlist', 'get_stock_info', 'get_intraday')
@@ -4343,16 +4399,12 @@ def get_kline_status():
     else:
         latest = '未知'
 
-    # 2026-08-22: K线滞后检测 — 忘了导出快照时, 前端据此显示 ⚠️ 警告
-    # 口径: K线最后一天 vs 最近"已收盘"交易日
-    # v2.118 (2026-09-25): 基准日改用**交易所自己报的**成交日期 (ds.last_session)。
-    #   🔴 原先纯时钟推算, 注释里自己写着「节假日会多报, 方向安全: 宁提醒勿漏」——
-    #   中秋节的星期五被当成"今天已收盘", 而 CSV 最后一根是 09-24 ⇒ 前端弹
-    #   **「⚠️K线滞后1天, 数据不可靠, 请更新」**。休市日弹这个, 用户只会以为数据没更新。
-    # v2.127 (2026-09-28): 🔴 v2.118 **没治根** —— 它换掉了"基准日怎么定", 但最后那步退一格
-    #   仍然**只跳周末、不认节假日** ⇒ 节后第一个交易日照样误报: 09-28(周一) 10:21 源已翻成
-    #   今天, 退一格落到 **09-25(中秋休市)** ⇒ 又弹「滞后1天」, 而 CSV 的最后一根 09-24 本来
-    #   就对。**工作日 ≠ 交易日** 就是这个假设的错。⇒ 主路径改成数本地交易日历(见下)。
+    # K线滞后检测 — 忘了导出快照时，前端据此显示 ⚠️ 警告。口径: K线最后一天 vs 最近"已收盘"交易日。
+    # v2.118: 基准日改用**交易所自己报的**成交日期(ds.last_session)。🔴 原先纯时钟推算，中秋节的星期五被当成
+    #   "今天已收盘"，而 CSV 最后一根是 09-24 ⇒ 休市日弹「⚠️K线滞后1天」，用户只会以为数据没更新。
+    # v2.127: 🔴 v2.118 **没治根** —— 它换了"基准日怎么定"，但最后那步退一格仍**只跳周末、不认节假日** ⇒
+    #   节后第一个交易日照样误报(09-28 周一 10:21 源已翻成今天，退一格落到 09-25 中秋休市)。
+    #   **工作日 ≠ 交易日** 就是这个假设的错。⇒ 主路径改成数本地交易日历(见下)。
     stale_days = 0
     try:
         from datetime import date as _date, datetime as _dt, timedelta as _td
@@ -4377,16 +4429,11 @@ def get_kline_status():
         today = now.date()
         t = now.hour * 100 + now.minute
         # ── v2.127 主路径: 本地交易日历 ─────────────────────────────────────────
-        # 直接数「日历里比 CSV 最后一根**晚**的有几天」—— 数的是**真实交易日**, 节假日
-        # 不进账 ⇒ 节后第一个交易日不再是"滞后1天", 区间里夹节假日也不再虚报。
-        # ⚠️ 这份日历由服务端自己的 _index_guard_loop 写 (300s 一跳, **盘中不写盘**,
-        #    15:05 后才落当日 bar) ⇒ 里面只有**已收盘确认**的交易日; 且它**独立于用户
-        #    手动导出的 kline_data/daily** (实测 mtime 15:10 vs 15:46 两条链路) ⇒
-        #    "忘了导出"时它照样准, 不会跟着一起变旧而让判定成环。
-        #    simulator 早就是这么用的 (simulator.py:981), 连下面的剔除防御都是同款。
-        # v2.128 (2026-09-28): 改调 engine 的共用判据 —— 与四个消费者**同一份实现**。
-        #   🔴 别再内联一份日历逻辑。v2.127 的教训就是「报告者改对了、消费者没改」, 于是
-        #   出现「状态说 0 天滞后、面板却全空」。一个判据只能有一份实现。
+        # 数「日历里比 CSV 最后一根**晚**的有几个交易日」—— 节假日不进账，节后第一天不再误报"滞后1天"。
+        #   日历由 _index_guard_loop 写(300s 一跳，盘中不写盘，15:05 后才落当日 bar) ⇒ 只含**已收盘确认**的交易日；
+        #   且独立于用户手动导出的 kline_data/daily ⇒ "忘了导出"时照样准，不会跟着一起变旧让判定成环。
+        # 🔴 v2.128: 调 engine 的共用判据，别再内联一份。v2.127 的教训就是「报告者改对了、消费者没改」
+        #   ⇒ 出现「状态说 0 天滞后、面板却全空」。**一个判据只能有一份实现。**
         _n = trade_days_behind(latest)
         if _n is not None and _n >= 0:
             stale_days = _n
@@ -4458,16 +4505,14 @@ def get_market_indices():
 
 
 # ============================================================
-# v2.111 (2026-09-25): 财经新闻聚合 (财联社 + 同花顺)
+# v2.111：财经新闻聚合（财联社 + 同花顺）
 # ============================================================
-# 两个都是匿名公开接口, **只在用户开窗/点「获取新闻」时拉, 无后台轮询**。
-# 🔴 财联社 rn **硬上限 = 50** —— 传 51 会**静默返 0 条**(errno 仍 0, 不报错),
-#    要 100 条必须用 `last_time` 翻页 (游标 = 上一页最早的 ctime; 实测零重叠)。
-# ⚠ 财联社的 sign 是前端逆向方案: md5(sha1(urlencode(sorted(params))))。
-#    **不是公开 API**, 随时可能变 → 两个源各拉各的, 一边挂了另一边照常出。
-# ⚠ 去重分两层: ① 同源内按 id (精确) ② 跨源**同题**(归一化后逐字相同) → 留 lvl 高的。
-#    **措辞不同**的跨源条目仍各留一条 —— 那种比对不可靠, 实测
-#    「WTI原油期货价格涨3% 逼近95美元/桶」vs「WTI原油涨超3%」必漏, 不碰。
+# 两个都是匿名公开接口，**只在用户开窗/点「获取新闻」时拉，无后台轮询**。
+# 🔴 财联社 rn **硬上限 = 50** —— 传 51 会**静默返 0 条**(errno 仍 0)，要 100 条必须用 last_time 翻页
+#   (游标 = 上一页最早的 ctime；实测零重叠)。财联社的 sign 是前端逆向方案 md5(sha1(urlencode(sorted(params))))，
+#   **不是公开 API**、随时可能变 ⇒ 两源各拉各的，一边挂了另一边照常出。
+# ⚠ 去重分两层：① 同源内按 id ② 跨源**同题**(归一化后逐字相同) → 留 lvl 高的。
+#   **措辞不同**的跨源条目仍各留一条 —— 那种比对不可靠（「WTI原油期货价格涨3%」vs「WTI原油涨超3%」必漏）。
 NEWS_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
            '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 NEWS_TTL = 60        # 秒: 开窗吃这个窗口内的缓存 (连点连开不重复拉)
@@ -4778,15 +4823,11 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                 #   走过 PAGEC_ALIVE 秒内才认为页面还开着 (用户定案: 没开就不触发)。
                 # v2.160: 顺便收下前端当前均线档位 —— 自动任务刷上级行业时跟它走
                 auto_task.touch_heartbeat(qs.get('lines', ''))
-                # v2.62: 成交额拉取挂这里 — /api/status 在盘后仍被轮询(10分钟),
-                # 盘后当日未结算时靠它重试补齐 (结算完成即永久跳过); 盘中与 /api/sentiment 二选一命中
-                # v2.119: **先取指数, 再判状态** —— is_holiday() 读的是"行情源报的
-                #   成交日期", 而那个日期正是 get_market_indices() 这次取数顺手记下的
-                #   (ds._note_qdate)。反过来的话, 冷启动(开机自启/刚重启)的**第一个**
-                #   /api/status 会因 LAST_SESSION 还空着而判成 POST_MARKET ——
-                #   节假日开机顶栏先闪一下"盘后", 第二次请求才对。
-                #   ⚠️ 不成环: get_market_indices() 的 TTL 只问 _in_session_window()(纯钟点),
-                #   不碰 is_holiday() (v2.118 就是这么定的, 别改回去)。
+                # v2.62：成交额拉取挂这里 —— /api/status 盘后仍被轮询（10 分钟），盘后当日未结算时靠它重试补齐。
+                # v2.119：**先取指数，再判状态** —— is_holiday() 读的是「行情源报的成交日期」，而那个日期正是
+                #   get_market_indices() 这次取数顺手记下的（ds._note_qdate）。反过来则冷启动（开机自启/刚重启）的
+                #   第一个 /api/status 会因 LAST_SESSION 还空着而判成 POST_MARKET —— 节假日开机顶栏先闪一下「盘后」。
+                #   ⚠ 不成环：get_market_indices() 的 TTL 只问 _in_session_window()（纯钟点），不碰 is_holiday()。
                 indices = get_market_indices()
                 _ph = get_trading_status()
                 turnover.ensure(_ph)
@@ -6772,6 +6813,36 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
             if path == '/api/version/pull':
                 self._json(_do_git_pull())
                 return
+            # v2.349 (2026-11-20 用户 m29038): 悬停分时**批量**拉取 —— 前端攒 200ms 或满 40 个
+            #   发一次, 一次网络往返拿 N 只。items 里的写法就是前端缓存键 'kind:code'。
+            #   ⚠ 必须是 POST: 40 个板块名拼进 URL 会超长(中文还要 encode 成 3 倍)。
+            if path == '/api/mini_minute/batch':
+                _pl = self._read_json_body()
+                _items = (_pl or {}).get('items') or []
+                if not isinstance(_items, list):
+                    self._json({'ok': False, 'error': 'items 必须是数组', 'items': {}})
+                    return
+                try:
+                    self._json(mini_minute_batch(_items))
+                except Exception as _e:
+                    _swlog('mini_batch_route', _e)
+                    self._json({'ok': False, 'error': str(_e)[:200], 'items': {}})
+                return
+            # v2.347 (2026-11-19 用户 m27833): 多股同列的行情快照 —— 前端每 10 秒推一次,
+            #   **覆盖式**落盘(force=True)。用户原话:「更新一次写一次, 覆盖前面的数据
+            #   而不是不断增量更新」—— archive.save_window 默认有三条去重(内容没变不写、
+            #   20 秒内先攒着), 这里必须 force 才能做到"每次都落一份最新的"。
+            if path == '/api/mtx/save':
+                _pl = self._read_json_body()
+                if not isinstance(_pl, dict) or not _pl:
+                    self._json({'ok': False, 'error': 'payload 为空或不是 JSON'})
+                    return
+                try:
+                    _p = _arc.save_window('mtx_watch', _pl, force=True)
+                    self._json({'ok': True, 'saved': bool(_p), 'path': _p})
+                except Exception as _e:
+                    self._json({'ok': False, 'error': str(_e)[:200]})
+                return
             # P3-10: 原POST /api/scan/start 死端点已删 (前端只用GET版, 且此版mode被硬编码忽略)
 
             if path == '/api/recap/reports':
@@ -7168,31 +7239,6 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                 if code.startswith(('BJ', 'BZ')):   # 北交所 30% 板 (本地基名是 BZ920xxx; 'BJ' 为历史遗留写法)
                     return 31.0
                 return 11.0
-
-            def _day_gap(code, last_int):
-                """⚠ v2.34e 废弃(不再调用): .day 依赖通达信同步, 用户已改快照/同花顺增量 → 恒滞后.
-                缺口判定统一用腾讯日历 cal_prev_day. 保留此函数作历史参考."""
-                dp = os.path.join(tdx_root, code[:2].lower(), 'lday', code.lower() + '.day')
-                if not os.path.exists(dp):
-                    return None
-                sz = os.path.getsize(dp)
-                n = sz // 32
-                if n <= 4:
-                    return 0
-                with open(dp, 'rb') as fh:
-                    fh.seek((n - 4) * 32)
-                    b = fh.read(128)
-                import struct
-                tail = [struct.unpack_from('<I', b, i * 32)[0] for i in range(4)]
-                if last_int == tail[-1]:
-                    return 0
-                if last_int > tail[-1]:
-                    # v2.34d: CSV 比 .day 新 (同花顺快照导入日 > 通达信导出日) →
-                    # CSV 已覆盖 .day 全部交易日, 不可能有缺口, 不触发腾讯兜底
-                    return 0
-                if last_int == tail[-2]:
-                    return 1
-                return 2
 
             def _last_date(fpath):
                 try:
@@ -8042,15 +8088,11 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
             'dual_peaks': dual_peaks,
             'turtle_stop': round(turtle_stop, 3),
         }
-        # >>> WAVE BEGIN (v2.260 2026-11-08) 波段低吸模式: 只画趋势线, 不画左峰/止损
-        # 用户 m01825: 「在股票列表处于波段低吸模式中的时候, 在K线图展示中屏蔽所有左峰和
-        #   止损画线, 采用趋势线画线」。
-        # 口径与选股完全同一套 (wave_scan.find_A/cand_bs/pick_line), 不另抄一份规格 ——
+        # >>> WAVE BEGIN（后端）波段低吸模式：只画趋势线，不画左峰/止损（用户 m01825）
+        # 口径与选股完全同一套（wave_scan.find_A/cand_bs/pick_line），不另抄一份规格 ——
         #   抄第二份 = 图上画的线与列表里那一行迟早分家。
-        # v2.260 起算法换了 (A=百日最低点、B=A后8~15日、收盘不破线), 这里也跟着换。
-        # v2.318 (2026-11-15 用户 m20947): 趋势线**常驻** —— draw_lines 里永远带
-        #   wave_all（六口径各一条）。前端切选股模式/切口径时只重画 markLine，
-        #   不再重新 GET /api/kline（那一次 175ms + 重播 1 秒入场动画，纯浪费）。
+        # v2.318：趋势线**常驻** —— draw_lines 里永远带 wave_all（六口径各一条）。前端切选股模式/切口径
+        #   时只重画 markLine，不再重新 GET /api/kline（那一次 175ms + 重播 1 秒入场动画，纯浪费）。
         #   成本实测：六口径合计 3.88ms/只（中位 0.00ms、最慢 1.5ms）。
         #   ⚠ 多数票本来就没有合格趋势线 ⇒ wave_all 可能是空 dict，前端必须按「可能为空」处理。
         wave_line = None
@@ -8250,19 +8292,13 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
             out.setdefault('cons_rec', '')
             out.update(_m4_flat(r))   # v2.216: 龙头战法两链的 A股适配
             return out
-        # v2.308 (2026-11-14 用户 m17423): 三个新模式也要能按「行业/概念 强多·偏多」筛列表。
-        #   它们的行本来就没有 ind_t/con_t (那是 engine._filter_multihead 写回趋势行用的),
-        #   但 _attach_trend_status 上面刚给每行附了 sector_status + concept_status
-        #   (全市场 257 行业 / 351 概念, 与趋势模式同一个 _trend_status_maps 口径)。
-        #   这里就地推成 ind_t/con_t —— 与 mode=='glue' 分支那段完全同款逻辑:
-        #     ind_t = sector_status ∈ {强多头, 偏多} 才写;
-        #     con_t = 该股所有概念里**最强**那档 (强多头优先, 否则偏多, 都没有就不写键)。
-        #   ⚠️ v2.308 最终版: 这三个模式的行**总是**带 ind_t/con_t 两键 (不命中就是空串) + mh_ready=1。
-        #      为什么不是"有才带": 前端 applyMhFilter 的 v2.152c 降级是「这一维全没有档位 ⇒ 该维不参与」,
-        #      对这些模式就成了「勾了概念偏多但全批都不偏多 ⇒ 原样放行」——用户看到的是"勾了没反应",
-        #      比筛出空表更难理解。而这三个模式**每只票都有 sector_status/concept_status**
-        #      (来自 _attach_trend_status 的 257 行业/351 概念全量表), 不存在"没数据"的情况,
-        #      空串的含义就是明确的"不达标"。所以带 mh_ready 标记让前端走严格分支。
+        # v2.308（用户 m17423）：三个新模式也要能按「行业/概念 强多·偏多」筛列表。它们的行本来没有
+        #   ind_t/con_t（那是 engine._filter_multihead 给趋势行用的），但 _attach_trend_status 上面刚给
+        #   每行附了 sector_status + concept_status（257 行业 / 351 概念全量表）⇒ 这里就地推成 ind_t/con_t。
+        #   ⚠ **总是带这两个键**（不命中就是空串）+ mh_ready=1。理由：前端 applyMhFilter 的 v2.152c 降级是
+        #     「这一维全没有档位 ⇒ 该维不参与」，对这些模式就成了「勾了偏多但全批都不偏多 ⇒ 原样放行」，
+        #     用户看到的是"勾了没反应"。而它们每只票都有 sector_status/concept_status，不存在"没数据"，
+        #     空串的含义就是明确的"不达标" ⇒ 带 mh_ready 让前端走严格分支。
         def _mh_of(_r):
             _s = _r.get('sector_status') or ''
             _o = {'ind_t': (_s if _s in ('偏多', '强多头') else '')}
@@ -8329,14 +8365,13 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
             'cons_bonus_notes': c.get('bonus_notes', []),
             'score_detail': c.get('score_detail', {}),
         }
-        # v2.99 (2026-09-16): 档位字段必须**原样带出**。v2.96 在 engine._filter_multihead 里把命中档位
-        #   写回 r['ind_t']/r['con_t'], 前端 4 个勾选框 (applyMhFilter) 靠它决定显示哪几档 —— 但这个 base
-        #   是**白名单**, 没带上这两个键, 行到前端恒是 undefined, applyMhFilter 每次都走到
-        #   `if(!useI&&!useC)return list;` 原样放行。**v2.96 上线起那 4 个框一次都没生效过**,
-        #   重扫也没用 —— 数据根本没发出去 (v2.96 记的"重扫一次才有档位"是错的)。
-        #   ⚠ 是**有才带**, 不是 .get(x,'') : _filter_multihead 在「名单从未计算且手动兜底也为空」时
-        #   原样 return results, 那些行两键皆无 —— 若补成空串, 前端 hasI/hasC 探针会误判"本批有档位",
-        #   一勾就把整表筛空。缺键 = 该维不参与筛选 (v2.96 定的降级语义, 保留)。
+        # v2.99: 档位字段必须**原样带出**。v2.96 在 engine._filter_multihead 里把命中档位写回 r['ind_t']/r['con_t']，
+        #   前端 4 个勾选框(applyMhFilter)靠它决定显示哪几档 —— 但这个 base 是**白名单**，没带上这两个键，行到前端
+        #   恒是 undefined，applyMhFilter 每次都走到 `if(!useI&&!useC)return list;` 原样放行。
+        #   **v2.96 上线起那 4 个框一次都没生效过**，重扫也没用 —— 数据根本没发出去。
+        #   ⚠ 是**有才带**，不是 .get(x,''): _filter_multihead 在「名单从未计算且手动兜底也为空」时原样 return，
+        #   那些行两键皆无 —— 若补成空串，前端 hasI/hasC 探针会误判"本批有档位"，一勾就把整表筛空。
+        #   缺键 = 该维不参与筛选(v2.96 定的降级语义，保留)。
         if 'ind_t' in r:
             base['ind_t'] = r['ind_t']
         if 'con_t' in r:
@@ -8876,22 +8911,15 @@ if __name__ == '__main__':
     #   Chrome 在窗口状态变化(最大化/还原)后会重建系统菜单, 所以必须周期复查;
     #   QT_NO_CAPTION_GUARD=1 可停用; 非 Windows / 无窗口时静默不做事。
     win_caption.start_guard()
-    # v2.152 (2026-10-18): 四时点自动任务 (11:31 快照 / 11:35 板块 / 15:31 快照+CSV /
-    #   15:35 板块)  [v2.233 2026-10-27 整体提前 4 分钟]。只在「页面开着 + 严格在时点那一分钟 + 今日未做过」时执行。
-    #   QT_NO_AUTO_TASK=1 可停用 (环境变量)。
-    # 🔴 用 bind() 注入执行体, 不让 auto_task 自己 import server —— 本文件是被
-    #   `python -m quant_terminal.server` 起的, 模块名是 __main__; 再 import 一次会
-    #   在同一个进程里第二次执行整个 server.py, 造出第二套全局状态(缓存/锁/线程)。
-    # v2.331 (2026-11-17 用户 m24382): 竞价打板每天 09:27:20 自动跑一次。
-    #   用户原话: 「执行时间设定为上午9:27:20，只要终端在这个时间（精确到秒）是打开状态
-    #   就直接跑"竞价打板"模式」。
-    #   🔴 为什么要绕一层: 扫描的完整链路（算结果 + 落盘槽 + 归档 + 推 SSE 进度 + 更新
-    #      SCAN_STATE）全在 run_scan_async 里。任务里自己调 auction_scan.scan() 只会算出
-    #      一份没人看得见的结果 —— 用户点开「竞价打板」看到的仍是上一次缓存的槽。
-    #   🔴 为什么起线程而不直接调: 自动任务在独立的 tick 线程里跑, 同步调 run_scan_async
-    #      会把它堵住 1.5~20 秒, 期间其它时点全部错过。起 daemon 线程即刻返回。
-    #   ★ 与用户手点按钮走的是**同一条路** —— 手点也是这个 /api/scan/start 起同样的线程,
-    #      所以四条副作用（缓存/归档/气泡/状态条）自动全部生效, 不需要任何平行实现。
+    # 自动任务（v2.152 建立，v2.233 提前 4 分钟，v2.331 加竞价，v2.333 加 09:28 补跑）:
+    #   09:27:20 竞价打板 / 11:31 快照 / 11:35 板块 / 15:31 快照+CSV / 15:35 板块。
+    #   只在「页面开着 + 到点 + 今日未做过」时执行；QT_NO_AUTO_TASK=1 可整体停用。
+    # 🔴 用 bind() 注入执行体，不让 auto_task 自己 import server —— 本文件被 `python -m quant_terminal.server`
+    #   起，模块名是 __main__；再 import 一次会在同一进程里第二次执行整个 server.py，造出第二套全局状态。
+    # 🔴 竞价那层为什么要绕: 扫描完整链路（算结果+落盘槽+归档+推 SSE+更新 SCAN_STATE）全在 run_scan_async 里，
+    #   任务里自己调 auction_scan.scan() 只会算出一份没人看得见的结果。而且必须起 daemon 线程 —— 自动任务在
+    #   独立 tick 线程里跑，同步调会把它堵住 1.5~20 秒，期间其它时点全错过。
+    #   ★ 与用户手点按钮走的是**同一条路**，所以缓存/归档/气泡/状态条四条副作用自动生效。
     def _auto_scan_auction():
         try:
             _w = bool(SCAN_STATE.get('running'))

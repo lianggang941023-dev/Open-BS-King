@@ -206,7 +206,8 @@ def read_csv_tail(fpath, n_lines=200):
             f.readline()
             f.seek(0, 2)
             fsize = f.tell()
-            # 每行最长约 130 字节 (8 列全填), 按行数折算字节预算
+            # 每行最长约 78 字节 (9 列全填, 实测 5,590 只最大 78), 这里按 130 留余量,
+            # 按行数折算字节预算
             budget = max(20000, n_lines * 130)
             if fsize > budget:
                 f.seek(max(0, fsize - budget))
