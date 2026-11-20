@@ -1769,6 +1769,7 @@ html:not([data-style321="off"]) .mk-row:hover{
    连板梯队的档位卡就是 border-left 2px 语义色 —— 沿用同一语言。
    行业趋势 / 概念趋势 / 同花顺热榜 是「面板标题」不是「窗口入口」，不加条。 */
 html:not([data-style321="off"]) #mkt-hd,
+html:not([data-style321="off"]) #yt-hd,
 html:not([data-style321="off"]) #ldr-hd,
 html:not([data-style321="off"]) #lhb-hd,
 html:not([data-style321="off"]) #sim-hd,
@@ -1779,6 +1780,7 @@ html:not([data-style321="off"]) #board-hd-con{
 }
 /* 悬停给出「这是可以点的」反馈 */
 html:not([data-style321="off"]) #mkt-hd:hover,
+html:not([data-style321="off"]) #yt-hd:hover,
 html:not([data-style321="off"]) #ldr-hd:hover,
 html:not([data-style321="off"]) #lhb-hd:hover,
 html:not([data-style321="off"]) #sim-hd:hover,
@@ -1885,6 +1887,7 @@ html:not([data-style321="off"]) #mkt-pane-phase #phz-ml-box{
 
 /* ① 色条：只用 border-left 这一根，颜色 = JS 写进来的 --hd-c（= 标题字色） */
 html:not([data-style321="off"]) #mkt-hd.hd-sweep,
+html:not([data-style321="off"]) #yt-hd.hd-sweep,
 html:not([data-style321="off"]) #ldr-hd.hd-sweep,
 html:not([data-style321="off"]) #lhb-hd.hd-sweep,
 html:not([data-style321="off"]) #sim-hd.hd-sweep,
@@ -14976,7 +14979,15 @@ function ytBuildOption(d){
       /* v2.353d: 一次全画时, 父节点的「可视图」就只剩标题带(upperLabel) + 边框 ——
          这两样必须一眼看清, 否则三层糊成一片(第一版就是这样: 90 个行业名全是灰字)。
          标题带的字色**不能写 'auto'**: 一级块底色在涨跌幅≈0 时正好也是灰的, 自动算出来是灰字。 */
+      /* v2.354 (2026-11-20 用户 m36953): levels[i] 是**按 depth 从 0 开始**匹配的,
+         depth 0 = ECharts 自动造的那个**虚拟根节点**(不是我们的一级行业)。
+         原来把「一级行业」的配置写在 levels[0] ⇒ 根节点被套上 20px 标题带 + 2px 边距,
+         而它的 formatter 因 `!d.sname` 返回空串 ⇒ 一条**没有文字的灰带**白占 22px,
+         还把整棵树往下推(实测一级节点 y=20)。
+         ⇒ 最前面补一层「根层」配置把标题带关掉、边距清零, 原三层顺次下移一位。 */
       levels: [
+        { itemStyle: { gapWidth: 0, borderWidth: 0, borderColor: 'transparent' },
+          upperLabel: { show: false }, label: { show: false } },
         { itemStyle: { gapWidth: 2, borderWidth: 2, borderColor: 'rgba(230,236,255,0.34)' },
           upperLabel: { show: true, height: 20, fontSize: 12, fontWeight: 700,
                         color: '#eaf0ff', textBorderColor: 'rgba(0,0,0,0.85)', textBorderWidth: 2,
