@@ -15,7 +15,70 @@
 
 ---
 
-## v2.354 — 2026-11-20
+## v2.356 — 2026-11-21
+
+**大盘云图：文字与方块错位。**
+
+### 根因
+
+`ytBuildOption()` 把三层（一级行业 / 二级板块 / 个股）全画在一棵树里，于是 5,585 只个股
+在约 170 万像素里必然出现 **8~20px 宽的块**，而一个汉字就 10px 宽；ECharts treemap 的
+`label` 在这些窄块里**照样把整串字画出来**，压到邻居块上。
+
+`YT.depth='tx'`（默认两档）实测越界 **0 处** —— 问题只出现在 `code` 档。
+
+### 三种常规办法全部证伪（已写进代码注释，别再试）
+
+1. `visibleMin` 12 / 120 / 400 / 900 / 1600：叶子数 5584→405，但越界恒 20
+   ⇒ 它只决定「画不画太小的块」，留下的块不会变大；
+2. `label.width` / `label.minMargin` / `overflow:'truncate'|'break'`：文字宽仍 40px
+   ⇒ treemap 的 label **不走这条裁剪路径**；
+3. `upperLabel.width:80|100`：同样无效。
+
+### 有效解法 = 两遍法
+
+关键前提：`setOption()` 返回时布局**已经算完** —— 紧接
+`getModel().getSeriesByIndex(0).getData().tree.rootNode()` 递归 `n.getLayout()`
+就能拿到每个节点的真矩形。
+
+1. `setOption(opt, true)`
+2. 递归读 `getLayout()`，按真宽高决定每个节点显示什么，覆盖写回 `series.data` 的
+   `label` / `upperLabel`
+3. `setOption({series:[{data}]}, false)`，最多 3 遍
+
+实测第 1 遍改 **5,705** 个 / 第 2 遍 **5** 个 / 第 3 遍 **0** 个收敛，越界 **0 处**。
+新增 `ytFitLabels(opt)` / `ytRefit()`，`YT.opt` 存 option，窗口 resize 后重跑。
+
+### 三档策略（个股）
+
+- `width >= 名字长*10+10 && height >= 30` → 名 + 换行 + 涨跌幅
+- `height >= 13` → 只名字
+- 否则**不画**，靠 hover tooltip + 点击切 K 线
+
+二级板块的 `upperLabel` 放不下时同样关掉。
+
+### v2.356b
+
+m2 模式早期用 `delete o3.label` 回落到全局 formatter，块宽只比名字宽一点点时
+`overflow:'break'` 会把**名字本身**折开（出现 `邮储银 / 行 / +1.05 / %` 4 行碎块）。
+改为给**显式 label + 真换行**，宽度需求从 `+2` 提到 **`+10`**（左右各留 5px），
+两行高从 `26` 提到 **`30`**。
+
+### 取证方法论（复用）
+
+- 图元只有 `rect`（17,097 个）与 `tspan`（666 个），**没有 `type:'text'`**；
+  `rect` 的 `el.x/el.y` 是 0（坐标在 group 上），真实尺寸用 `el.shape.width/height`。
+- 文字全局盒 = `el.getBoundingRect().clone()` + `applyTransform(el.getComputedTransform())`。
+- 配对要用「名字前缀 + 最小面积」，**不能用「最小包含中心点的 rect」**
+  （会被兄弟 rect 误判出 16~20 个假阳性）。
+- `#k-code` 默认自带值，判断「点击是否切了股票」要先 `e.value=''`。
+- 连续多次 `setOption` 实验后 `ec.getOption()` 的 series 可能变 0 个
+  ⇒ 先 `ytRender()` 重建再测。
+
+- 只改前端，刷新即可。
+
+---
+
 ## v2.355 — 2026-11-20
 
 **大盘云图个股方块上的字。**

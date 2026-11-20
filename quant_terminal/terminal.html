@@ -14723,7 +14723,7 @@ function winShrink(el,cb){
      几何 = 最大化后的「多股同列」(用户指定): 左 0 / 上 #hd.bottom / 下 innerHeight。
    ══════════════════════════════════════════════════════════════════════════ */
 var YT_LS = 'qt_yuntu_v1';
-var YT = {open:false, kind:'industry', weight:'mv', sqrt:true, depth:'tx',
+var YT = {opt:null, open:false, kind:'industry', weight:'mv', sqrt:true, depth:'tx',
           data:null, cache:{}, chart:null, boundResize:false, busy:false};
 
 function ytStore(){
@@ -14800,7 +14800,11 @@ function ytBindResize(){
     var g = ytGeo();
     w.style.left = g.left+'px'; w.style.top = g.top+'px';
     w.style.width = g.width+'px'; w.style.height = g.height+'px';
-    if(YT.chart){ try{ YT.chart.resize(); }catch(e){} }
+    if(YT.chart){
+      try{ YT.chart.resize(); }catch(e){}
+      /* v2.356: 窗口尺寸变了, 方块宽高全变 ⇒ 按新 layout 重算「画不画字」 */
+      try{ ytRefit(); }catch(e){}
+    }
   });
 }
 
@@ -15024,6 +15028,99 @@ function ytBuildOption(d){
 }
 
 /* ── 渲染 ──────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════════
+   v2.356 (2026-11-20 用户 m37237 «云图中存在大量文字和图标对应偏移»):
+   treemap 三层全画时, 5585 个个股里绝大多数方块只有 8~20px 宽 (一个字 10px),
+   而 ECharts 的 label 在窄块里**照样把整串字画出来**, 于是文字压到邻居块上。
+
+   实测三种「常规办法」全部无效 (别再试):
+     · visibleMin 12/120/400/900/1600 —— 只决定画不画太小的块, 留下的块不会变大
+     · label.width / label.minMargin / overflow:'truncate' / 'break'
+       —— treemap 的 label 不走这条裁剪路径, 文字宽度一点没变 (实测仍 40px)
+
+   唯一有效的 = 两遍法: setOption 返回时**布局已经算完**(getLayout 立刻可用),
+   所以拿每个节点的真矩形反推它该显示什么, 把 per-node 覆盖写回 data, 再 setOption。
+   实测 2 遍收敛: 第 1 遍改 5705 个, 第 2 遍 5 个, 第 3 遍 0 个; 最终越界 0 处。
+   ═══════════════════════════════════════════════════════════════════════ */
+function ytFitLabels(opt){
+  var ec = YT.chart; if(!ec) return 0;
+  var sm = null; try{ sm = ec.getModel().getSeriesByIndex(0); }catch(e){ sm = null; }
+  if(!sm) return 0;
+  var tree = null; try{ tree = sm.getData().tree; }catch(e){ tree = null; }
+  if(!tree) return 0;
+  var root = tree.rootNode ? tree.rootNode() : tree.root;
+  if(!root) return 0;
+
+  var data = (opt && opt.series && opt.series[0] && opt.series[0].data) || [];
+  var ch = 0, i, j, k;
+  var d1 = root.children || [];
+  for(i=0;i<d1.length;i++){
+    var n1 = d1[i], o1 = data[i];
+    if(!n1 || !o1) continue;
+    var c2 = n1.children || [], s2 = o1.children || [];
+    for(j=0;j<c2.length;j++){
+      var n2 = c2[j], o2 = s2[j];
+      if(!n2 || !o2) continue;
+      var L2 = null; try{ L2 = n2.getLayout(); }catch(e){ L2 = null; }
+      if(L2){
+        var need2 = String(o2.sname || '').length * 9 + 42;
+        var off2  = (L2.width < need2 || L2.height < 15);
+        var on2   = !(o2.upperLabel && o2.upperLabel.show === false);
+        if(off2 && on2){ o2.upperLabel = { show: false }; ch++; }
+        else if(!off2 && !on2){ delete o2.upperLabel; ch++; }
+      }
+      var c3 = n2.children || [], s3 = o2.children || [];
+      for(k=0;k<c3.length;k++){
+        var n3 = c3[k], o3 = s3[k];
+        if(!n3 || !o3) continue;
+        var L3 = null; try{ L3 = n3.getLayout(); }catch(e){ L3 = null; }
+        if(!L3) continue;
+        /* v2.356b: 宽度需求留 10px 余量 (左右各 5px) —— 只留 2px 时块宽刚好
+           等于名字宽, ECharts 的 overflow:'break' 会把「邮储银行」自己折成
+           「邮储银 / 行」, 实测就是这么出现的 4 行碎块。
+           两行需要 30px 高 (lineHeight 13 × 2 + 上下各 2px)。 */
+        var nw = String(o3.sname || '').length * 10 + 10;
+        var mode = 0;
+        if(L3.width >= nw && L3.height >= 30)      mode = 2;   /* 名 + 换行 + 涨跌幅 */
+        else if(L3.width >= nw && L3.height >= 13) mode = 1;   /* 只名字 */
+        var cur = (o3.__ym == null) ? 2 : o3.__ym;
+        if(mode !== cur){
+          o3.__ym = mode;
+          if(mode === 0){
+            o3.label = { show: false };
+          }else if(mode === 1){
+            o3.label = { show: true, formatter: function(p){
+              return (p && p.data && p.data.sname) || '';
+            } };
+          }else{
+            /* v2.356b: 这里**必须给真换行**。全局默认 formatter 用的是两个空格,
+               块宽不够时 break 就把名字也折开; 自己给 '\n' 才稳定两行。
+               (注意: 写 '\\n' 会变成「反斜杠 + n」两个字面字符, v2.355 踩过) */
+            o3.label = { show: true, formatter: function(p){
+              var dd = (p && p.data) || {};
+              var pv = Number(dd.pct) || 0;
+              return (dd.sname || '') + '\n' + (pv > 0 ? '+' : '') + pv.toFixed(2) + '%';
+            } };
+          }
+          ch++;
+        }
+      }
+    }
+  }
+  return ch;
+}
+
+function ytRefit(){
+  /* 窗口尺寸变了 / 重新 resize 之后方块的宽高全变, 必须按新 layout 重算一遍。
+     只对 code 档有意义: tx 档实测越界 0 处, 不必多跑两次 setOption。 */
+  if(!YT.chart || YT.depth !== 'code') return;
+  var opt = YT.opt; if(!opt) return;
+  for(var it=0; it<3; it++){
+    if(!ytFitLabels(opt)) break;
+    try{ YT.chart.setOption({ series: [{ data: opt.series[0].data }] }, false); }catch(e){ break; }
+  }
+}
+
 function ytRender(){
   var d = YT.data;
   if(!d) return;
@@ -15046,7 +15143,16 @@ function ytRender(){
     });
   }
   try{
-    YT.chart.setOption(ytBuildOption(d), true);
+    var _opt = ytBuildOption(d);
+    YT.opt = _opt;                       /* v2.356: ytRefit 要复用它重算方块的宽高 */
+    YT.chart.setOption(_opt, true);
+    /* v2.356: 只有「三层全画」才会出现 10px 宽的方块 —— 按真实 layout 两遍收敛。 */
+    if(YT.depth === 'code'){
+      for(var _it=0; _it<3; _it++){
+        if(!ytFitLabels(_opt)) break;
+        YT.chart.setOption({ series: [{ data: _opt.series[0].data }] }, false);
+      }
+    }
     YT.chart.resize();
   }catch(e){
     ytMsg('渲染失败: ' + (e && e.message), 'err');
@@ -15087,6 +15193,8 @@ function ytRefresh(){ ytLoad(true); }
 window.ytToggle = ytToggle;   window.ytOpen = ytOpen;   window.ytClose = ytClose;
 window.ytSetKind = ytSetKind; window.ytSetWeight = ytSetWeight;
 window.ytToggleSqrt = ytToggleSqrt; window.ytSetDepth = ytSetDepth;
+window.ytFitLabels = ytFitLabels;   /* v2.356: 供调试/自检 */
+window.ytRefit = ytRefit;
 window.ytRefresh = ytRefresh;
 
 var boardSt = {open:false, kind:'industry', level:2, sort:'heat', rows:[], sel:'',
