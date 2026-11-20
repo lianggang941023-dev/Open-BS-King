@@ -110,6 +110,7 @@ from quant_terminal import version as _ver
 # v2.353 (2026-11-20 用户 m36569): 「大盘云图」—— 全市场板块/个股的方块树图。
 #   数据全复用 board_rank._facts()/_maps() 的现成缓存, 不新增网络源。
 from quant_terminal import yuntu as _yt
+from quant_terminal import idx_store as _ids
 
 PORT = 8799  # 新端口, 不冲突旧的8788
 
@@ -2856,6 +2857,8 @@ _MINI_KEEP = 86400                   # 磁盘留一天: 隔夜的旧分时没意
 # v2.349: 批量拉取计数 —— >0 时 mini_minute **不逐只写盘**(30 只 = 30 次全量 JSON 落盘),
 #   由 mini_minute_batch 在整批结束时统一写一次。用列表而不是普通 int, 免得拆包赋值。
 _MINI_DEFER = [0]
+# v2.359c: 指数存档后台增量补的节流状态 {'day': 'YYYY-MM-DD', 'running': 0/1}
+_IDX_SYNC = {}
 
 
 def _ymd8(s):
@@ -6489,7 +6492,90 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                     _yk = 'industry'
                 if qs.get('force', '0') == '1':
                     _yt.invalidate(_yk)
-                self._json(_yt.build(_yk))
+                _yd = _yt.build(_yk)
+                # v2.357 (用户 m37552): 每次构建成功都落一份存档 —— 以前只有启动预热
+                # 写一次, 之后 60 秒 TTL 重算出来的新数据从不落盘, 前端打开读到的
+                # 永远是开机那一刻的旧图。save_window 自带去重(内容没变不写盘)。
+                try:
+                    _arc.save_window('yuntu_' + _yk, _yd)
+                except Exception:
+                    pass
+                self._json(_yd)
+
+            elif path == '/api/idx_pairs':
+                """v2.359 (用户 m38119): 特色指标 —— 两条指数收盘价 + 比值走势。
+
+                参数: a=分子代码 b=分母代码 limit=只留最后 N 个点
+                      不带 a/b 时返回三组预设的**元信息**(起点/点数/ready), 给左列选项用。
+
+                ★ 历史从短板开始: 两个日期集合取**交集**(见 idx_store.pair_view),
+                  所以「科创综指/中证红利」自然从 2019-12-31 起, 不是从 2005 起。
+                """
+                _ia = (qs.get('a', '') or '').strip().lower()
+                _ib = (qs.get('b', '') or '').strip().lower()
+                if not _ia or not _ib:
+                    self._json({'ok': True, 'pairs': _ids.pairs_meta()})
+                    return
+                try:
+                    _lim = int(qs.get('limit', '0') or 0)
+                except (TypeError, ValueError):
+                    _lim = 0
+                try:
+                    _idx_auto_sync()          # v2.359c: 收盘后首次打开就后台补数
+                except Exception:
+                    pass
+                _d5 = _ids.pair_view(_ia, _ib, limit=_lim)
+                try:
+                    _arc.save_window('idx_pair', _d5)
+                except Exception:
+                    pass
+                self._json(_d5)
+
+            elif path == '/api/idx_list':
+                """v2.359 (用户 m38119): 指数一览 —— 七大指数的最近 N 根收盘价。
+
+                参数: limit=每只保留多少根(默认 260 ≈ 一年), codes=逗号分隔覆盖默认列表
+                ★ 只读本地存档, 一次网络请求都不发(用户 m38119: 历史必须落本地)。
+                """
+                try:
+                    _lim = int(qs.get('limit', '260') or 260)
+                except (TypeError, ValueError):
+                    _lim = 260
+                try:
+                    _idx_auto_sync()
+                except Exception:
+                    pass
+                _cd = (qs.get('codes', '') or '').strip()
+                _d6 = {'ok': True, 'rows': _ids.list_view(limit=_lim)}
+                if _cd:
+                    _d6['rows'] = []
+                    for _c in [x.strip().lower() for x in _cd.split(',') if x.strip()]:
+                        _rr = _ids.load(_c)
+                        _tt = _rr[-_lim:] if _lim else _rr
+                        _d6['rows'].append({
+                            'code': _c, 'name': _ids.name_of(_c), 'short': _ids.short_of(_c),
+                            'n': len(_rr),
+                            'start': _rr[0]['date'] if _rr else '',
+                            'end': _rr[-1]['date'] if _rr else '',
+                            'last': _tt[-1]['close'] if _tt else None,
+                            'dates': [x['date'] for x in _tt],
+                            'closes': [x['close'] for x in _tt],
+                        })
+                try:
+                    _arc.save_window('idx_list', _d6)
+                except Exception:
+                    pass
+                self._json(_d6)
+
+            elif path == '/api/idx_meta':
+                """v2.359: 单只指数的本地存档概况（行数/起止日/文件 mtime），不联网。"""
+                _c = (qs.get('code', '') or '').strip().lower()
+                if not _c:
+                    self._json({'ok': False, 'error': '缺少 code'})
+                else:
+                    _m = _ids.meta(_c)
+                    _m['ok'] = True
+                    self._json(_m)
 
             elif path == '/api/board_rank':
                 """v2.277 (2026-11-11 用户 m09653): 行业/概念「板块」排行 —— 从 TSP 移植。
@@ -7169,6 +7255,30 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
             #   **覆盖式**落盘(force=True)。用户原话:「更新一次写一次, 覆盖前面的数据
             #   而不是不断增量更新」—— archive.save_window 默认有三条去重(内容没变不写、
             #   20 秒内先攒着), 这里必须 force 才能做到"每次都落一份最新的"。
+            if path == '/api/idx_sync':
+                """v2.359: 把 index_daily 里的指数增量补齐（只拉最近 10 根比对/追加）。
+
+                body: {"codes": ["sh000922", ...]}  省略 = 全部登记代码
+                      {"deep": 1} 顺带做深度回补（往前翻页到上市日）
+                返回 {ok, items:{code: "appended:N"|"noop"|...}, secs}
+                """
+                _b = self._read_json_body() or {}
+                _cs = _b.get('codes') or list(_ids.IDX_INFO.keys())
+                _deep = bool(_b.get('deep'))
+                _t0 = time.time()
+                _items = {}
+                for _c in _cs:
+                    _c = str(_c).strip().lower()
+                    if not _c:
+                        continue
+                    try:
+                        _items[_c] = (_ids.deepen(_c) and 'deepened') if _deep else _ids.sync(_c)
+                    except Exception as _e:
+                        _items[_c] = 'fail: %s' % _e
+                self._json({'ok': True, 'items': _items,
+                            'secs': round(time.time() - _t0, 2)})
+                return
+
             if path == '/api/mtx/save':
                 _pl = self._read_json_body()
                 if not isinstance(_pl, dict) or not _pl:
@@ -9301,6 +9411,9 @@ if __name__ == '__main__':
             #   它复用 board_rank._facts() 的缓存, 此时已焐热 ⇒ 行业那趟实测 0.7 秒
             #   (冷启要 6.9 秒, 其中 6.3 秒花在读 5585 个 CSV 上)。
             ('大盘云图',       0.5,  _pw_yuntu),
+            # v2.359 (用户 m38119): 宽基指数存档 —— 特色指标要中证红利 2005 年起、
+            #   创业板指 2010 年起, 都是**本地文件**, 缺了会一路联网翻页(首次约 3 秒)。
+            ('指数存档',       0.5,  _pw_idx),
             ('上级行业趋势4档', 1.0,  _pw_parent),
             # v2.323 (用户 m22464): 「连板梯队」「龙虎榜」原来是「点开才算」, 冷启要等几秒；
             #   现在预热时就跑并落档。**排在这里而不是最后** —— 两者只要 1~2 秒,
@@ -9366,6 +9479,57 @@ if __name__ == '__main__':
             except Exception:
                 pass
         return '%d 个口径' % _n
+
+    def _pw_idx():
+        """v2.359: 宽基指数本地存档预热 —— 缺的补深、已全的秒回。"""
+        _done = _ids.prewarm(log=lambda m: _swlog('idx_prewarm', m))
+        _syn = _idx_auto_sync(blocking=True)      # v2.359c: 顺手把今天的增量补上
+        return '%d 只/%s' % (len(_done), _syn)
+
+    def _idx_auto_sync(blocking=False):
+        """v2.359c (用户 m38119「后续增量写入补充到本地数据」): 指数存档后台增量补。
+
+        节流: 同一天只跑一次（`_IDX_SYNC['day']` 记住跑过的日期）。
+        时机: 只在**收盘后**才补 —— 盘中腾讯给的当日是 forming bar，
+              `idx_store.sync()` 内部还有一层 `_drop_forming_today` 兜底，但
+              没必要每开一次页面就白跑几秒网络。
+        用法: `blocking=True` 给预热用（等它跑完再走下一步），
+              默认起 daemon 线程 —— 页面永远不等。
+        """
+        _today = time.strftime('%Y-%m-%d')
+        if _IDX_SYNC.get('day') == _today:
+            return 'skip'
+        _hm = time.strftime('%H%M')
+        if _hm < '1506':
+            return 'skip-intraday'
+        if _IDX_SYNC.get('running'):
+            return 'running'
+        _IDX_SYNC['running'] = 1
+
+        def _run():
+            _n = _ok = 0
+            try:
+                for _c in list(_ids.IDX_INFO.keys()):
+                    try:
+                        _r = _ids.sync(_c)
+                        _n += 1
+                        if _r != 'fail':
+                            _ok += 1
+                    except Exception as _e1:
+                        _swlog('idx_auto_sync', _e1)
+                _IDX_SYNC['day'] = _today
+            finally:
+                _IDX_SYNC['running'] = 0
+
+        if blocking:
+            _run()
+            return 'done'
+        try:
+            threading.Thread(target=_run, daemon=True).start()
+        except Exception:
+            _IDX_SYNC['running'] = 0
+            return 'fail'
+        return 'started'
 
     def _pw_board_con():
         _rd = _brd.rank('concept', 2, 'heat')  # 复用上面的 _facts, 只重算分组
