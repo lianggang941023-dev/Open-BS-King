@@ -2134,6 +2134,7 @@ th.th-flip:hover .hdr-swap > i{ text-decoration: underline; text-underline-offse
     <div id="scan-msg" style="font-size:9px;color:var(--tx2);padding:2px 6px">就绪，等待扫描</div>
 
 <div class="pnl-hd modbtn" id="mkt-hd" onclick="mktToggle()" style="cursor:pointer" title="市场总览 —— 大盘 KPI / 涨跌分布 / 情绪雷达 / 趋势强度 / 涨停梯队 / 板块热度 / 监控中心 (点开可以和「行业板块」「概念板块」一样大)"><span style="color:var(--gold);font-weight:600">市场总览</span><span style="font-size:8px;color:var(--tx3)" id="mkt-hd-time"></span></div>
+<div class="pnl-hd modbtn" id="yt-hd" onclick="ytToggle()" style="cursor:pointer" title="大盘云图 —— 把全市场板块/个股摊成方块, 面积 ∝ 流通市值(或成交额), 颜色看涨跌 · 窗口最大"><span style="color:var(--purple);font-weight:600">大盘云图</span><span style="font-size:8px;color:var(--tx3)" id="yt-hd-time"></span></div>
 <div class="pnl-hd modbtn" id="ldr-hd" onclick="ldrToggle()" style="cursor:pointer" title="连板梯队 —— 按连板数分档 (含炸板/断板), 五板在最上 · 窗口大小同市场总览"><span style="color:var(--orange);font-weight:600">连板梯队</span><span style="font-size:8px;color:var(--tx3)" id="ldr-hd-time"></span></div>
 <!-- v2.301 (2026-11-13 用户 m15900): 龙虎榜独立入口 —— 放在「连板梯队」与「模拟交易」之间 -->
 <div class="pnl-hd modbtn" id="lhb-hd" onclick="lh2Toggle()" style="cursor:pointer" title="龙虎榜 —— 全部/机构/游资三档 · 点股票切右侧K线 · 点席位看近期操作"><span style="color:var(--cyan);font-weight:600">龙虎榜</span><span style="font-size:8px;color:var(--tx3)" id="lhb-hd-time"></span></div>
@@ -5995,7 +5996,9 @@ function escHandler(e){
             // v2.281 (2026-11-12 用户 m10425/m10906): 涨幅RPS轮动分析窗 —— z-index 比板块窗更高
             ['rps-win',rpsClose],
             // v2.346 (2026-11-19 用户 m27442): 多股同列窗 —— 与市场总览同尺寸、同层
-            ['mtx-win',mtxClose],['mkt-win',mktClose],['ldr-win',ldrClose],['lhb2-win',lh2Close],
+            ['mtx-win',mtxClose],['mkt-win',mktClose],
+            // v2.353 (用户 m36569): 大盘云图
+            ['yuntu-win',ytClose],['ldr-win',ldrClose],['lhb2-win',lh2Close],
             // v2.195: 龙虎榜 / 涨停池 / 热榜全量 —— 三块新窗口同样吃 ESC（后开的先关）
             ['lhb-win',lhbClose],['pool-win',poolClose],['hot-win',hotFullClose],
             ['news-win',newsEsc],
@@ -13204,6 +13207,8 @@ function closeSiblings(keep){
   if(keep!=='mkt' && typeof mktSt!=='undefined' && mktSt.open) mktClose();
   // v2.299: 连板梯队窗同层互斥
   if(keep!=='ldr' && typeof LDR!=='undefined' && LDR.open) ldrClose();
+  // v2.353 (用户 m36569): 大盘云图 —— 最大的那一层窗口, 与其它全部互斥
+  if(keep!=='yt' && typeof YT!=='undefined' && YT.open) ytClose();
   if(keep!=='lh2' && typeof LH2!=='undefined' && LH2.open) lh2Close();
   // v2.306 (2026-11-14 用户 m17208): 补上 模拟交易浮窗 + 同花顺热榜全量窗。
   //   这两个原来谁都不关 —— 连开几个窗口就互相遮挡。
@@ -14705,6 +14710,368 @@ function winShrink(el,cb){
      左侧 = 行业/概念趋势标题右缘 → #pnl-left.right
      右侧 = K线图右缘 = 整个窗口最右 → #pnl-right.right
    ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   v2.353 (2026-11-20 用户 m36569): 大盘云图
+     参考 https://github.com/wenyuanw/a-share-heatmap (368★ MIT)
+       —— 它用 Next.js + Canvas 自己实现「二分平衡切分」treemap;
+          我们不需要抄布局算法, ECharts 5.5 自带 treemap (内置 squarified, 更规整)。
+       参考的是它的**信息结构**: 一级板块 → 二级板块 → 个股, 面积成比例, 颜色看涨跌。
+     几何 = 最大化后的「多股同列」(用户指定): 左 0 / 上 #hd.bottom / 下 innerHeight。
+   ══════════════════════════════════════════════════════════════════════════ */
+var YT_LS = 'qt_yuntu_v1';
+var YT = {open:false, kind:'industry', weight:'mv', sqrt:true, depth:'tx',
+          data:null, cache:{}, chart:null, boundResize:false, busy:false};
+
+function ytStore(){
+  try{
+    var o = JSON.parse(localStorage.getItem(YT_LS) || '{}') || {};
+    if(o.kind === 'concept' || o.kind === 'industry') YT.kind = o.kind;
+    if(o.weight === 'mv' || o.weight === 'amt' || o.weight === 'eq') YT.weight = o.weight;
+    if(typeof o.sqrt === 'boolean') YT.sqrt = o.sqrt;
+    if(o.depth === 'tx' || o.depth === 'code') YT.depth = o.depth;
+  }catch(e){}
+}
+function ytSave(){
+  try{ localStorage.setItem(YT_LS, JSON.stringify({kind:YT.kind, weight:YT.weight, sqrt:YT.sqrt, depth:YT.depth})); }catch(e){}
+}
+ytStore();
+
+/* ── 几何：最大化后的「多股同列」 ───────────────────────────────────── */
+function ytGeo(){
+  var R = $('pnl-right'), H = $('hd');
+  if(!R || !H) return {left:0, width:1707, top:32, height:999};
+  var r = R.getBoundingClientRect(), h = H.getBoundingClientRect();
+  return {left:0, width:r.right, top:h.bottom,
+          height:Math.max(200, window.innerHeight - h.bottom)};
+}
+
+function ytToggle(){ if(YT.open) ytClose(); else ytOpen(); }
+
+function ytOpen(){
+  try{ closeSiblings('yt'); }catch(e){}
+  var w = $('yuntu-win'); if(!w) return;
+  var g = ytGeo();
+  w.style.left = g.left+'px'; w.style.top = g.top+'px';
+  w.style.width = g.width+'px'; w.style.height = g.height+'px';
+  w.style.display = 'flex';
+  YT.open = true;
+  try{ winPop(w); }catch(e){}
+  try{ escTouch('yuntu-win'); }catch(e){}
+  ytPaintBtns();
+  ytBindResize();
+  /* winPop 有 240ms 入场动画, 这期间量出来的是动画中间值 —— 等它完再 init */
+  setTimeout(function(){ try{ ytRender(); }catch(e){} }, 260);
+  if(!YT.data) ytLoad(false); else ytRender();
+}
+
+function ytClose(){
+  var w = $('yuntu-win');
+  YT.open = false;
+  if(w){
+    try{ winShrink(w, function(){ w.style.display='none'; }); }
+    catch(e){ w.style.display='none'; }
+  }
+  ytPaintBtns();
+}
+
+function ytPaintBtns(){
+  if(typeof hdHi === 'function') hdHi('yt-hd', YT.open, '--purple');
+  var on = function(id, b){ var e=$(id); if(e) e.classList.toggle('on', !!b); };
+  on('yt-k-ind', YT.kind === 'industry');
+  on('yt-k-con', YT.kind === 'concept');
+  on('yt-w-mv',  YT.weight === 'mv');
+  on('yt-w-amt', YT.weight === 'amt');
+  on('yt-w-eq',  YT.weight === 'eq');
+  on('yt-sqrt',  YT.sqrt);
+  on('yt-d-tx',  YT.depth === 'tx');
+  on('yt-d-code',YT.depth === 'code');
+}
+
+function ytBindResize(){
+  if(YT.boundResize) return;
+  YT.boundResize = true;
+  window.addEventListener('resize', function(){
+    if(!YT.open) return;
+    var w = $('yuntu-win'); if(!w) return;
+    var g = ytGeo();
+    w.style.left = g.left+'px'; w.style.top = g.top+'px';
+    w.style.width = g.width+'px'; w.style.height = g.height+'px';
+    if(YT.chart){ try{ YT.chart.resize(); }catch(e){} }
+  });
+}
+
+function ytMsg(t, cls){
+  var m = $('yt-msg'); if(!m) return;
+  m.textContent = t || '';
+  m.style.color = (cls === 'err') ? 'var(--up)' : (cls === 'ok' ? 'var(--tx2)' : 'var(--tx3)');
+}
+
+/* ── 取数 ──────────────────────────────────────────────────────── */
+function ytLoad(force){
+  if(YT.busy) return;
+  YT.busy = true;
+  var k = YT.kind;
+  ytMsg(force ? '正在重算…' : '加载中…');
+  var u = '/api/yuntu?kind=' + encodeURIComponent(k) + (force ? '&force=1' : '');
+  api(u).then(function(d){
+    YT.busy = false;
+    if(!d || d._err || !d.ok){
+      ytMsg('取数失败: ' + ((d && (d._err || d.error)) || '未知'), 'err');
+      return;
+    }
+    YT.cache[k] = d;
+    YT.data = d;
+    ytFillSub(d);
+    ytRender();
+  }).catch(function(e){
+    YT.busy = false;
+    ytMsg('取数失败: ' + (e && e.message), 'err');
+  });
+}
+
+function ytFillSub(d){
+  var s = $('yt-sub'); if(!s) return;
+  var t = (d.ts || '').slice(6, 11);
+  var tt = $('yt-hd-time'); if(tt) tt.textContent = t ? ' ' + t : '';
+  if(d.lv === 3){
+    s.textContent = (d.qdate || d.date || '') + ' · 一级 ' + d.n_lv1 + ' / 二级 ' + d.n_lv2
+                  + ' / 个股 ' + d.n_stock + ' 只';
+  }else{
+    s.textContent = (d.qdate || d.date || '') + ' · 概念 ' + d.n_lv1 + ' 个板块'
+                  + ' / 个股 ' + d.n_stock + ' 只 (归属 ' + d.n_attr + ' 条)';
+  }
+  s.title = '数据日期 ' + (d.date || '') + ' / 快照 ' + (d.qdate || '') + ' / 源 ' + (d.src || '')
+          + ' / 构建耗时 ' + (d.secs || 0) + ' 秒';
+}
+
+/* ── 颜色：涨跌幅 → 红绿（A 股涨红跌绿） ────────────────────────── */
+function ytColor(p){
+  /* v2.353d: 第一版太冲 —— 跌的绿顶到荧光绿(#96e496~#c8f0c8), 涨的红又偏暗,
+     整屏看久了眼睛累。改成「低饱和 + 暗底 + 靠明度区分」, 和参考项目/大盘云图一致。
+     另外涨跌走**同一条明度曲线**(±4% 满色), 否则同样跌 3% 的红绿深浅对不上。 */
+  var v = Number(p) || 0;
+  if(v === 0) return '#34343c';
+  var a = Math.min(1, Math.abs(v) / 4.0);       /* ±4% 以上就满色 */
+  var r, g, b;
+  if(v > 0){                                    /* 涨 → 红 */
+    r = Math.round(74 + 128 * a);               /* 74 → 202 */
+    g = Math.round(72 - 24 * a);                /* 72 → 48  */
+    b = Math.round(82 - 30 * a);                /* 82 → 52  */
+  }else{                                        /* 跌 → 绿 */
+    r = Math.round(74 - 30 * a);                /* 74 → 44  */
+    g = Math.round(72 + 96 * a);                /* 72 → 168 */
+    b = Math.round(82 - 30 * a);                /* 82 → 52  */
+  }
+  var h = function(x){ var s = x.toString(16); return s.length < 2 ? '0' + s : s; };
+  return '#' + h(r) + h(g) + h(b);
+}
+/* 字色跟着底色明暗翻转 —— 深色底用浅字, 浅色底用深字 */
+function ytInk(p){
+  var a = Math.min(1, Math.abs(Number(p) || 0) / 4.0);
+  return a > 0.45 ? '#101014' : '#e6e6f0';
+}
+
+/* ── 面积权重 ──────────────────────────────────────────────────── */
+function ytVal(node, isStock){
+  if(YT.weight === 'eq') return 1;
+  var v = (YT.weight === 'amt') ? (Number(node.amt) || 0) : (Number(node.cap) || 0);
+  if(v <= 0) return 0.0001;
+  return YT.sqrt ? Math.sqrt(v) : v;
+}
+
+/* ── 组装 ECharts treemap option ──────────────────────────────── */
+function ytBuildOption(d){
+  var ch = [], i, j, g, s, st;
+  for(i=0;i<d.g.length;i++){
+    g = d.g[i];
+    var kids = [];
+    if(d.lv === 3 && g.sb && g.sb.length){
+      for(j=0;j<g.sb.length;j++){
+        s = g.sb[j];
+        var sk = [];
+        for(var q=0;q<s.st.length;q++){
+          st = s.st[q];                       /* [code,name,pct,cap亿,amt] */
+          sk.push({
+            name: st[1] + ' ' + (st[2] > 0 ? '+' : '') + Number(st[2]).toFixed(2) + '%',
+            value: ytVal({cap:st[3], amt:st[4]}, true),
+            pct: st[2], code: st[0], sname: st[1], isStock: true,
+            itemStyle:{color: ytColor(st[2]), borderColor:'rgba(0,0,0,0.35)', borderWidth:0.5}
+          });
+        }
+        kids.push({
+          name: s.n + ' ' + (s.pct > 0 ? '+' : '') + Number(s.pct).toFixed(2) + '%',
+          value: ytVal(s, false),
+          pct: s.pct, sname: s.n, isLv2: true,
+          itemStyle:{color: ytColor(s.pct * 0.75), borderColor:'rgba(0,0,0,0.55)', borderWidth:1},
+          children: sk
+        });
+      }
+    }
+    ch.push({
+      name: g.n + ' ' + (g.pct > 0 ? '+' : '') + Number(g.pct).toFixed(2) + '%',
+      value: ytVal(g, false),
+      pct: g.pct, sname: g.n, isLv1: true,
+      itemStyle:{color: ytColor(g.pct * 0.4), borderColor:'rgba(255,255,255,0.14)',
+                 borderWidth:1.5, gapWidth:1},
+      children: kids.length ? kids : undefined
+    });
+  }
+  return {
+    animation: false,
+    backgroundColor: 'transparent',
+    tooltip: {
+      confine: true,
+      backgroundColor: 'rgba(20,20,26,0.96)',
+      borderColor: 'rgba(120,120,140,0.5)',
+      textStyle: { color: '#e6e6f0', fontSize: 11 },
+      formatter: function(info){
+        var p = info.data && info.data.pct;
+        if(p == null) return info.name;
+        var col = (p > 0) ? '#f04050' : (p < 0 ? '#00e070' : '#b0b0c8');
+        var s = '<b>' + (info.data.sname || info.name) + '</b><br/>涨跌幅 <b style="color:' + col + '">'
+              + (p > 0 ? '+' : '') + Number(p).toFixed(2) + '%</b>';
+        if(info.data.code) s += '<br/>代码 ' + info.data.code;
+        return s;
+      }
+    },
+    series: [{
+      type: 'treemap',
+      roam: false,
+      nodeClick: false,
+      breadcrumb: { show: false },
+      width: '100%', height: '100%',
+      top: 2, left: 2, right: 2, bottom: 2,
+      squareRatio: 1.1,
+      /* v2.353c (踩了两次的坑, 别再动): ECharts treemap 的 `leafDepth` 是
+         「一次显示几层就允许往下钻」的**闸门**, 不是「画到第几层」:
+           · 不设           → 整棵树一次全画出来 ← 用户要的就是这个形态
+           · leafDepth = 1  → **只画第 1 层**(90 个无字方块)
+           · leafDepth = 2  → 画两层, 第 2 层带 ▶ 可点进去
+         所以这一行**绝对不要加**。钻取交给 nodeClick:false + 我们自己的 click 切 K 线。 */
+      visibleMin: 12,   /* v2.353c: 整树一次画时方块更密, 太小的块既出不了字又拖慢布局 */
+      label: {
+        /* v2.353d: 个股方块上的字。`color:'auto'` 会按底色算, 但小块底色深浅差异巨大,
+           实测大面积糊掉 —— 改成写死浅色 + 2px 深描边, 任何底色上都吃得住。 */
+        show: true,
+        color: '#eef2ff',
+        textBorderColor: 'rgba(0,0,0,0.72)',
+        textBorderWidth: 2,
+        fontSize: 10,
+        lineHeight: 13,
+        overflow: 'truncate',
+        formatter: function(p){
+          if(YT.depth === 'tx' && p.data && p.data.code) return '';
+          if(!p.data) return '';
+          if(p.data.code) return p.data.sname + '\\n' + (p.data.pct > 0 ? '+' : '')
+                              + Number(p.data.pct).toFixed(2) + '%';
+          return p.data.sname;
+        }
+      },
+      /* v2.353d: 顶层这个 upperLabel 只管「根节点」, 我们对第 1 层已经在 levels[0] 里
+         单独指定了(带涨跌幅 + 描边), 所以这里保持一个安全默认即可。 */
+      upperLabel: { show: true, height: 20, fontSize: 12, fontWeight: 700,
+                    color: '#eaf0ff', textBorderColor: 'rgba(0,0,0,0.85)', textBorderWidth: 2 },
+      itemStyle: { gapWidth: 1, borderWidth: 1, borderColor: 'rgba(0,0,0,0.5)' },
+      /* v2.353d: 一次全画时, 父节点的「可视图」就只剩标题带(upperLabel) + 边框 ——
+         这两样必须一眼看清, 否则三层糊成一片(第一版就是这样: 90 个行业名全是灰字)。
+         标题带的字色**不能写 'auto'**: 一级块底色在涨跌幅≈0 时正好也是灰的, 自动算出来是灰字。 */
+      levels: [
+        { itemStyle: { gapWidth: 2, borderWidth: 2, borderColor: 'rgba(230,236,255,0.34)' },
+          upperLabel: { show: true, height: 20, fontSize: 12, fontWeight: 700,
+                        color: '#eaf0ff', textBorderColor: 'rgba(0,0,0,0.85)', textBorderWidth: 2,
+                        padding: [0, 4], formatter: function(p){
+                          var d = p.data || {};
+                          /* v2.353e: ECharts 会给 data 数组自动造一个**虚拟根节点**,
+                             它没有 pct ⇒ 算出 0 ⇒ 左上角凭空出现一个 "0.00%"。 */
+                          if(!d.sname) return '';
+                          var v = Number(d.pct) || 0;
+                          return d.sname + '  ' + (v > 0 ? '+' : '') + v.toFixed(2) + '%';
+                        } } },
+        { itemStyle: { gapWidth: 1, borderWidth: 1, borderColor: 'rgba(0,0,0,0.55)' },
+          upperLabel: { show: true, height: 15, fontSize: 10,
+                        color: '#dfe4f0', textBorderColor: 'rgba(0,0,0,0.80)', textBorderWidth: 1.5,
+                        padding: [0, 3], formatter: function(p){
+                          var d = p.data || {};
+                          if(!d.sname) return '';       /* v2.353e: 同上层, 压掉虚拟根节点 */
+                          var v = Number(d.pct) || 0;
+                          return d.sname + ' ' + (v > 0 ? '+' : '') + v.toFixed(2) + '%';
+                        } } },
+        { itemStyle: { gapWidth: 0.5, borderWidth: 0.5, borderColor: 'rgba(0,0,0,0.40)' },
+          upperLabel: { show: false },
+          label: { show: YT.depth === 'code', fontSize: 10, lineHeight: 13 } }
+      ],
+      data: ch
+    }]
+  };
+}
+
+/* ── 渲染 ──────────────────────────────────────────────────────── */
+function ytRender(){
+  var d = YT.data;
+  if(!d) return;
+  if(!YT.open) return;
+  var box = $('yt-body'); if(!box) return;
+  if(typeof echarts === 'undefined'){ ytMsg('ECharts 未加载', 'err'); return; }
+  if(!YT.chart){
+    box.innerHTML = '';
+    YT.chart = echarts.init(box, null, {renderer: 'canvas'});
+    YT.chart.on('click', function(p){
+      if(!p || !p.data) return;
+      var code = p.data.code;
+      if(!code) return;                    /* 点板块块不做跳转(没有对应 K 线) */
+      if(typeof selectStock === 'function'){
+        try{ selectStock(code); }catch(e){}
+      }
+      /* v2.353f: 云图窗口 left:0, 把中栏 K 线整片盖住 —— 点完必须收起来,
+         否则用户切了股票却什么也看不见。数据在 YT.cache 里, 重开是毫秒级。 */
+      ytClose();
+    });
+  }
+  try{
+    YT.chart.setOption(ytBuildOption(d), true);
+    YT.chart.resize();
+  }catch(e){
+    ytMsg('渲染失败: ' + (e && e.message), 'err');
+    return;
+  }
+  /* v2.353e: 正常状态**不写** #yt-msg —— 计数看左边 #yt-sub 就够,
+     「按市值 / √压缩」看按钮亮不亮就够。这里只留给错误信息。 */
+  ytMsg('');
+  ytPaintBtns();
+}
+
+/* ── 交互 ──────────────────────────────────────────────────────── */
+function ytSetKind(k){
+  if(k !== 'concept' && k !== 'industry') return;
+  if(YT.kind === k) return;
+  YT.kind = k; ytSave(); ytPaintBtns();
+  if(YT.cache[k]){
+    YT.data = YT.cache[k];
+    ytFillSub(YT.data);
+    ytRender();
+  }else{
+    YT.data = null; ytLoad(false);
+  }
+}
+function ytSetWeight(w){
+  if(YT.weight === w) return;
+  YT.weight = w; ytSave(); ytPaintBtns(); ytRender();
+}
+function ytToggleSqrt(){
+  YT.sqrt = !YT.sqrt; ytSave(); ytPaintBtns(); ytRender();
+}
+function ytSetDepth(dp){
+  if(YT.depth === dp) return;
+  YT.depth = dp; ytSave(); ytPaintBtns(); ytRender();
+}
+function ytRefresh(){ ytLoad(true); }
+
+window.ytToggle = ytToggle;   window.ytOpen = ytOpen;   window.ytClose = ytClose;
+window.ytSetKind = ytSetKind; window.ytSetWeight = ytSetWeight;
+window.ytToggleSqrt = ytToggleSqrt; window.ytSetDepth = ytSetDepth;
+window.ytRefresh = ytRefresh;
+
 var boardSt = {open:false, kind:'industry', level:2, sort:'heat', rows:[], sel:'',
                loading:false, boundResize:false, heatAll:false, mem:null, q:'',
                // v2.348 (用户 m28759 ③④): ts = 行业/概念共用的数据时刻; cache = 每档各存一份
@@ -16430,7 +16797,7 @@ function hdHi(id, on, cvar){
 }
 // 主题切换后重新取一次字色（否则 --hd-c 还是上一个主题的色）
 function hdRefreshAll(){
-  var ids = ['mkt-hd','ldr-hd','lhb-hd','sim-hd','board-hd-ind',
+  var ids = ['mkt-hd','yt-hd','ldr-hd','lhb-hd','sim-hd','board-hd-ind',
              'board-hd-con','sma-pnl-hd','cma-hd','sect-hd'];
   for(var i=0;i<ids.length;i++){
     var b = $(ids[i]); if(!b) continue;
@@ -18331,6 +18698,56 @@ window.ldrLhbPick = ldrLhbPick; window.ldrLhbInst = ldrLhbInst; window.ldrLhbDep
        右侧 = K线图界面的右边缘 = 整个窗口最右侧 → #pnl-right.right
      一个 DOM 服务两种 kind (boardSt.kind), 不同时开两个。
      ══════════════════════════════════════════════════════════════════════════ -->
+<!-- ══════════════════════════════════════════════════════════════════════════
+     v2.353 (2026-11-20 用户 m36569): 大盘云图 —— 参考 GitHub wenyuanw/a-share-heatmap
+       (368★ MIT, Next.js + Canvas 自实现二分平衡切分; 我们直接用 ECharts 5.5 自带的
+        treemap, 它内置 squarified 算法, 比二分切分更规整, 不必抄布局)
+     几何 = 最大化后的「多股同列」: 左顶到 0 / 下顶到 innerHeight / 上是指数栏下沿 / 右不动
+       用户原话「窗口大小参考最大化的多股同列窗口一样的大小, 因为大盘云图信息量比较密集」
+     ══════════════════════════════════════════════════════════════════════════ -->
+<div id="yuntu-win" style="display:none;flex-direction:column;position:fixed;z-index:10005;background:var(--win);border:1px solid var(--bd2);box-shadow:0 0 32px var(--sh-lg);border-radius:6px;overflow:hidden;font-size:10px;color:var(--tx0)">
+  <div style="display:flex;align-items:center;gap:6px;padding:4px 10px;background:var(--bg2);border-bottom:1px solid var(--bd);flex-shrink:0">
+    <span style="font-weight:700;font-size:12px;color:var(--purple);white-space:nowrap">大盘云图</span>
+    <span id="yt-sub" style="font-size:9px;color:var(--tx3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex-shrink:1">加载中…</span>
+    <span style="display:inline-flex;gap:3px;margin-left:6px">
+      <button class="btn sm" id="yt-k-ind" onclick="ytSetKind('industry')" style="font-size:9px;padding:1px 8px" title="行业云图 —— 一级 90 类 / 二级 257 类 / 个股 5585 只 (三层)">行业</button>
+      <button class="btn sm" id="yt-k-con" onclick="ytSetKind('concept')" style="font-size:9px;padding:1px 8px" title="概念云图 —— 351 个概念板块 (一层; 一只票平均属于 9.5 个概念, 摊个股会把市值重复计 9 倍)">概念</button>
+    </span>
+    <span style="color:var(--bd2)">|</span>
+    <span style="display:inline-flex;gap:3px">
+      <button class="btn sm" id="yt-w-mv" onclick="ytSetWeight('mv')" style="font-size:9px;padding:1px 8px" title="面积 ∝ 流通市值 —— 大盘股块大, 看权重分布">市值</button>
+      <button class="btn sm" id="yt-w-amt" onclick="ytSetWeight('amt')" style="font-size:9px;padding:1px 8px" title="面积 ∝ 当日成交额 —— 今天谁活跃谁大">成交额</button>
+      <button class="btn sm" id="yt-w-eq" onclick="ytSetWeight('eq')" style="font-size:9px;padding:1px 8px" title="等权 —— 每只票一样大, 纯粹看涨跌分布">等权</button>
+    </span>
+    <button class="btn sm" id="yt-sqrt" onclick="ytToggleSqrt()" style="font-size:9px;padding:1px 8px" title="平方根压缩 —— 按市值的平方根算面积。线性算时有 21% 的票面积 &lt; 40px²(放不下字), 压缩后只剩 3 只">√压缩</button>
+    <span style="color:var(--bd2)">|</span>
+    <span style="display:inline-flex;gap:3px">
+      <button class="btn sm" id="yt-d-tx" onclick="ytSetDepth('tx')" style="font-size:9px;padding:1px 7px" title="只写板块名与涨跌幅 —— 个股方块太小, 不写字只看颜色">板块</button>
+      <button class="btn sm" id="yt-d-code" onclick="ytSetDepth('code')" style="font-size:9px;padding:1px 7px" title="个股方块里也写「简称 + 涨跌幅」(只有放得下的大块才显示)">个股</button>
+    </span>
+    <span style="flex:1"></span>
+    <span id="yt-msg" style="font-size:9px;color:var(--tx3);white-space:nowrap;text-align:right;min-width:0"></span>
+    <button class="btn sm" onclick="ytRefresh()" style="font-size:10px;padding:0 6px" title="强制重算 (行业口径冷启约 7 秒)">⟳</button>
+    <button class="btn sm" onclick="ytClose()" style="font-size:10px;padding:0 5px" title="关闭 (ESC 也可)">✕</button>
+  </div>
+  <div id="yt-body" style="flex:1;min-height:0;position:relative;background:var(--bg0)"></div>
+  <div id="yt-legend" style="flex-shrink:0;display:flex;align-items:center;gap:10px;padding:2px 10px;border-top:1px solid var(--bd);background:var(--bg2);font-size:9px;color:var(--tx3)">
+    <span>颜色 = 涨跌幅</span>
+    <span style="display:inline-flex;align-items:center;gap:2px">
+      <i style="display:inline-block;width:16px;height:9px;background:#c8f0c8"></i>
+      <i style="display:inline-block;width:16px;height:9px;background:#96e496"></i>
+      <i style="display:inline-block;width:16px;height:9px;background:#5ac85a"></i>
+      <i style="display:inline-block;width:16px;height:9px;background:#3a3a44"></i>
+      <i style="display:inline-block;width:16px;height:9px;background:#d85a5a"></i>
+      <i style="display:inline-block;width:16px;height:9px;background:#c43a3a"></i>
+      <i style="display:inline-block;width:16px;height:9px;background:#a01818"></i>
+    </span>
+    <span>-10% … 0 … +10%</span>
+    <span style="flex:1"></span>
+    <span>点方块 → 切 K 线并收起本窗（再点「大盘云图」回来，数据已在缓存里）</span>
+  </div>
+</div>
+
 <div id="board-win" style="display:none;flex-direction:column;position:fixed;z-index:10000;background:var(--win);border:1px solid var(--bd2);box-shadow:0 0 32px var(--sh-lg);border-radius:6px;overflow:hidden;font-size:10px;color:var(--tx0)">
   <!-- ── 标题栏 (TSP PageHeader) ── -->
   <div style="display:flex;align-items:center;gap:8px;padding:4px 10px;background:var(--bg2);border-bottom:1px solid var(--bd);flex-shrink:0">

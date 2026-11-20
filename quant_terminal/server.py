@@ -107,6 +107,9 @@ from quant_terminal import regime_scan as _rg   # v2.311 市场环境
 from quant_terminal import archive as _arc
 # v2.340 (2026-11-18 用户 m25750): 版本机制 —— VERSION 文件是唯一真源, 本模块只读
 from quant_terminal import version as _ver
+# v2.353 (2026-11-20 用户 m36569): 「大盘云图」—— 全市场板块/个股的方块树图。
+#   数据全复用 board_rank._facts()/_maps() 的现成缓存, 不新增网络源。
+from quant_terminal import yuntu as _yt
 
 PORT = 8799  # 新端口, 不冲突旧的8788
 
@@ -6468,6 +6471,26 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                     _brt.invalidate()
                 self._json(_brt.rotation(kind, level, days, force=False))
 
+            elif path == '/api/yuntu':
+                """v2.353 (2026-11-20 用户 m36569): 大盘云图 —— 面积成比例的方块树图。
+
+                与 /api/board_rank 的区别:
+                  board_rank = 一行一个板块的**排行榜**(文本)
+                  yuntu      = 把板块/个股摊成**方块**, 面积 ∝ 流通市值(或成交额) → 看全市场热度分布
+
+                参数: kind=industry(默认, 一级90→二级257→个股) | concept(只有 351 个板块一层),
+                      force=1 清缓存重算
+
+                ★ 概念为什么不做个股层: 一只票平均属于 9.5 个概念, 摊进方块等于同一只票画 9 遍、
+                  市值重复计 9 倍, 面积毫无意义(实测 4.9MB / 5.3 万个矩形)。概念只看板块。
+                """
+                _yk = qs.get('kind', 'industry')
+                if _yk not in _yt.KINDS:
+                    _yk = 'industry'
+                if qs.get('force', '0') == '1':
+                    _yt.invalidate(_yk)
+                self._json(_yt.build(_yk))
+
             elif path == '/api/board_rank':
                 """v2.277 (2026-11-11 用户 m09653): 行业/概念「板块」排行 —— 从 TSP 移植。
 
@@ -9274,6 +9297,10 @@ if __name__ == '__main__':
             ('市场总览',       2.0,  _pw_overview),
             ('行业板块',       1.5,  _pw_board_ind),
             ('概念板块',       1.5,  _pw_board_con),
+            # v2.353 (用户 m36569): 大盘云图 —— 紧跟在两个板块步骤后面。
+            #   它复用 board_rank._facts() 的缓存, 此时已焐热 ⇒ 行业那趟实测 0.7 秒
+            #   (冷启要 6.9 秒, 其中 6.3 秒花在读 5585 个 CSV 上)。
+            ('大盘云图',       0.5,  _pw_yuntu),
             ('上级行业趋势4档', 1.0,  _pw_parent),
             # v2.323 (用户 m22464): 「连板梯队」「龙虎榜」原来是「点开才算」, 冷启要等几秒；
             #   现在预热时就跑并落档。**排在这里而不是最后** —— 两者只要 1~2 秒,
@@ -9324,6 +9351,21 @@ if __name__ == '__main__':
             pass
         c = _brd.cache_info()
         return '%s 只 / %s' % (c.get('n'), c.get('date'))
+
+    def _pw_yuntu():
+        """v2.353: 大盘云图两个口径一起焐热 + 各落一份存档。
+
+        行业口径 283KB / 概念口径 44KB —— 都只写一次, 不随 60 秒 TTL 反复落盘。
+        """
+        _n = 0
+        for _k in ('industry', 'concept'):
+            try:
+                _d4 = _yt.build(_k, force=True)
+                _arc.save_window('yuntu_' + _k, _d4, force=True)
+                _n += 1
+            except Exception:
+                pass
+        return '%d 个口径' % _n
 
     def _pw_board_con():
         _rd = _brd.rank('concept', 2, 'heat')  # 复用上面的 _facts, 只重算分组

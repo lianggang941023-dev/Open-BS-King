@@ -354,6 +354,8 @@ _WIN_NAMES = ('market_overview', 'ladder_up', 'ladder_down',
               'mtx_watch',
               'lhb_all', 'lhb_org', 'lhb_hm',
               'board_industry_1', 'board_industry_2', 'board_concept_1', 'board_concept_2',
+    # v2.353: 大盘云图两个口径
+    'yuntu_industry', 'yuntu_concept',
               # v2.324 (用户 m22862): 三条趋势线也各有存档（按均线档位分，3/4/5/6）
               'trend_sector_3', 'trend_sector_4', 'trend_sector_5', 'trend_sector_6',
               'trend_concept_3', 'trend_concept_4', 'trend_concept_5', 'trend_concept_6',
