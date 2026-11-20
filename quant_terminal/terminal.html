@@ -14962,11 +14962,17 @@ function ytBuildOption(d){
         textBorderWidth: 2,
         fontSize: 10,
         lineHeight: 13,
-        overflow: 'truncate',
+        /* v2.355b: 'truncate' 会把「工商银行  +3.30%」整行截成「工商银行  +」,
+           白白丢掉涨跌幅还拖个孤零零的加号 ⇒ 'break' 按可用宽度自动折行。 */
+        overflow: 'break',
         formatter: function(p){
           if(YT.depth === 'tx' && p.data && p.data.code) return '';
           if(!p.data) return '';
-          if(p.data.code) return p.data.sname + '\\n' + (p.data.pct > 0 ? '+' : '')
+          /* v2.355 (2026-11-20 用户 m37104): 这里原来写的是 '\\n' ——
+             JS 里那是「反斜杠 + n」两个字面字符, 方块上直接显示出 \n。
+             改成空格分隔, 与上面两级 upperLabel 的写法一致。 */
+          if(p.data.code) return p.data.sname + '  '
+                              + (p.data.pct > 0 ? '+' : '')
                               + Number(p.data.pct).toFixed(2) + '%';
           return p.data.sname;
         }
