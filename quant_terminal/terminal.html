@@ -5236,6 +5236,9 @@ function sortMaMembers(col){
 
 // v2.12 板块下钻渲染 (滚动加载分页)
 function renderMaMembers(name, color, pct, status, kindLabel, lines){
+  // v2.352 (用户 m36368): 下钻/重画时把「沪深科创」4 个框的灰态也算一遍 —— 否则从上一次
+  //   竞价打板扫描带过来的 disabled 会一直挂着, 用户看着是"变灰点不动"。幂等, 只是刷 UI。
+  try{ boardFilterSync(); }catch(e){}
   mhFilterSync();  // v2.96: 板块下钻里 4 个档位框灰掉 —— 该功能**不筛**下钻成分股 (锁定板块后票本就少, 挨个看)
   var rows=applyBoardFilter(maMembers||[]);  // v2.13 板块勾选过滤 (对行业/概念成分股生效)
   // v2.131 (2026-10-01): 市值注入 + 「名称」列点击排序 (按流通市值, 首点升序; 没市值恒沉底)
@@ -10394,7 +10397,11 @@ function restoreBoardFilter(){
 function applyBoardFilter(list){
   if(!list)return list;
   // >>> AUCTION BEGIN (v2.252 2026-11-06 竞价打板: 不吃沪/深/科/创 板块筛选)
-  if(((window._scanMode||'')==='auction'))return list;
+  // v2.352 (2026-11-20 用户 m36368) 🔴 修: 这句原来只判扫描模式, 把**板块下钻**一起带走了 ——
+  //   下钻时 _scanMode 仍停在上次扫描的模式(比如竞价打板), 于是成分股列表的 4 个框勾了也不筛。
+  //   竞价打板的候选池确实没有科创/创业, 但**成分股列表里两边都有**, 不该一起免检。
+  //   判据补 `maMembers===null`(= 当前不在下钻)才早退。
+  if(((window._scanMode||'')==='auction') && maMembers===null)return list;
   // <<< AUCTION END
   var st=boardFilterState();
   return list.filter(function(r){
@@ -10421,8 +10428,23 @@ function applyBoardFilter(list){
 function boardFilterSync(){
   var box=$('board-filter');
   if(!box)return;
-  var dis=((window._scanMode||'')==='auction');
+  // v2.352 (2026-11-20 用户 m36368) 🔴 修: 原来只看扫描模式, 板块下钻时 _scanMode 不变 ⇒
+  //   上次跑过竞价打板的话, 进下钻这 4 个框还是灰的、点不动, 而且下钻里压根没调本函数,
+  //   连重新判一次的机会都没有。补 `maMembers===null`: 只有**竞价打板自己的扫描列表**才置灰。
+  var dis=((window._scanMode||'')==='auction') && (maMembers===null);
   box.style.opacity=dis?'0.35':'1';
+  // v2.352b: 本终端把 title 摘走存成 data-bs-tip 再渲染气泡 —— 只写/只删 title 是空的。
+  //   三个属性一起写、一起清（同 v2.347b 的教训）。
+  var _tip=dis ? '竞价打板的候选池只含沪深主板(无科创/创业), 这 4 个框不起作用 —— 换个模式或点板块下钻就能勾' : '';
+  if(_tip){
+    box.setAttribute('title',_tip);
+    box.setAttribute('data-bs-tip',_tip);
+    box.setAttribute('data-tip-orig',_tip);
+  }else{
+    box.removeAttribute('title');
+    box.removeAttribute('data-bs-tip');
+    box.removeAttribute('data-tip-orig');
+  }
   var ids=['bf-sh','bf-sz','bf-kc','bf-cy'];
   for(var i=0;i<ids.length;i++){
     var e=$(ids[i]);
