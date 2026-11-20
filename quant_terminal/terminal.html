@@ -14763,9 +14763,10 @@ function ytOpen(){
   try{ escTouch('yuntu-win'); }catch(e){}
   ytPaintBtns();
   ytBindResize();
-  /* winPop 有 240ms 入场动画, 这期间量出来的是动画中间值 —— 等它完再 init */
-  setTimeout(function(){ try{ ytRender(); }catch(e){} }, 260);
-  if(!YT.data) ytLoad(false); else ytRender();
+  /* v2.357 (2026-11-21 用户 m37552): 先把「存档」画出来(实测 0.05 秒), 同时后台拉新的。
+     以前这里是 setTimeout(260ms) 再 ytRender() 一次, 加上 ytLoad.then 里那一次,
+     打开一次要连画 2~3 遍 treemap(单遍 480ms) —— 这是「点开等好几秒」的一大半。 */
+  ytOpenFast();
 }
 
 function ytClose(){
@@ -14815,11 +14816,45 @@ function ytMsg(t, cls){
 }
 
 /* ── 取数 ──────────────────────────────────────────────────────── */
+/* v2.357 (用户 m37552): 打开的第一件事是读存档, 不是等接口。
+   后端 `_pw_yuntu()` 在启动预热时就把两个口径各落了一份
+   data_archive/window/yuntu_industry|concept.json（实测 /api/snapshot 0.05 秒），
+   存档里就是 /api/yuntu 的完整返回体, 画出来和真数据长得一模一样。
+   ⇒ 先画存档(几十毫秒见方块), 真数据回来后由 ytRender 的签名比对决定要不要重画。 */
+function ytOpenFast(){
+  if(YT.data){
+    try{ ytRender(); }catch(e){}
+    var _m0 = String(YT.data.ts || '').slice(6, 11);
+    ytMsg('当前 ' + (_m0 ? (_m0 + ' ') : '') + '· 正在拉最新…');
+    ytLoad(false);
+    return;
+  }
+  var k = YT.kind;
+  api('/api/snapshot?name=' + encodeURIComponent('yuntu_' + k)).then(function(s){
+    if(!YT.open) return;
+    if(s && s.ok && s.payload && s.payload.g && s.payload.g.length){
+      var p = s.payload;
+      YT.data = p; YT.cache[k] = p;
+      try{ ytFillSub(p); ytRender(); }catch(e){}
+      /* v2.357b: 画完就说清「这是存档、新的在路上」—— 否则一直挂「加载中…」
+         十几秒(冷启动时 _facts() 要扫 5585 个 CSV), 用户分不清是卡了还是好了。 */
+      var _st = String(p.ts || '').slice(6, 11);
+      ytMsg('存档' + (_st ? (' ' + _st) : '') + ' · 正在拉最新…');
+    }else{
+      ytMsg('加载中…');
+    }
+    ytLoad(false);                 /* 存档画完, 再去拉真的 */
+  }).catch(function(){ ytLoad(false); });
+}
+
 function ytLoad(force){
   if(YT.busy) return;
   YT.busy = true;
   var k = YT.kind;
-  ytMsg(force ? '正在重算…' : '加载中…');
+  /* v2.357c: 存档已经画出来了(#yt-msg 正挂着「存档 xx · 正在拉最新…」),
+     这里无条件写「加载中…」会把它盖掉 —— 用户看到「加载中…」就以为还没画。 */
+  if(force) ytMsg('正在重算…');
+  else if(!YT.data) ytMsg('加载中…');
   var u = '/api/yuntu?kind=' + encodeURIComponent(k) + (force ? '&force=1' : '');
   api(u).then(function(d){
     YT.busy = false;
@@ -14831,6 +14866,7 @@ function ytLoad(force){
     YT.data = d;
     ytFillSub(d);
     ytRender();
+    ytMsg('');                     /* v2.357b: 真数据到了, 提示收掉 */
   }).catch(function(e){
     YT.busy = false;
     ytMsg('取数失败: ' + (e && e.message), 'err');
@@ -15129,7 +15165,14 @@ function ytRender(){
   if(typeof echarts === 'undefined'){ ytMsg('ECharts 未加载', 'err'); return; }
   if(!YT.chart){
     box.innerHTML = '';
-    YT.chart = echarts.init(box, null, {renderer: 'canvas'});
+    /* v2.357: 直接按容器尺寸 init —— 以前靠随后一次 resize() 补,
+       那次 resize 实测 200~800ms, 而 setOption 后根矩形本来就等于画布尺寸。 */
+    var _iw = box.clientWidth || 0, _ih = box.clientHeight || 0;
+    YT.chart = echarts.init(box, null,
+        (_iw > 0 && _ih > 0) ? {renderer: 'canvas', width: _iw, height: _ih}
+                             : {renderer: 'canvas'});
+    YT.ew = _iw; YT.eh = _ih; YT.sig = '';
+    YT.needCoarse = 1;                   /* v2.358c: 新图第一次画, 先来个粗版 */
     YT.chart.on('click', function(p){
       if(!p || !p.data) return;
       var code = p.data.code;
@@ -15142,9 +15185,66 @@ function ytRender(){
       ytClose();
     });
   }
+  /* v2.357 (用户 m37552): 同一份数据 + 同一口径不重画。
+     打开一次会连着触发两三次 ytRender（存档一次 + 真数据一次 + resize 回调一次），
+     每次都重建 5585 个节点的树 —— 有了签名就只画真正需要的那一次。 */
+  var _sig = [d.ts || '', YT.kind, YT.depth, YT.weight, YT.sqrt ? 1 : 0].join('|');
+  var _ew = box.clientWidth || 0, _eh = box.clientHeight || 0;
+  if(YT.sig === _sig){
+    if(YT.ew !== _ew || YT.eh !== _eh){
+      try{ YT.chart.resize(); }catch(e2){}
+      YT.ew = _ew; YT.eh = _eh;
+    }
+    return;
+  }
+  YT.sig = _sig;
+  /* v2.358d: 口径(kind/depth/weight/sqrt)一变, 布局就完全不同 —— 也要先粗后细,
+     否则切档时会一口气等 1.1 秒黑屏。只有 ts 变(=真数据覆盖)时才闷头画全量。 */
+  var _shape = [YT.kind, YT.depth, YT.weight, YT.sqrt ? 1 : 0].join('|');
+  if(YT.shape !== _shape){ YT.shape = _shape; YT.needCoarse = 1; }
+  if((YT.ew !== _ew || YT.eh !== _eh) && _ew > 0 && _eh > 0){
+    try{ YT.chart.resize(); }catch(e2){}
+  }
+  YT.ew = _ew; YT.eh = _eh;
   try{
     var _opt = ytBuildOption(d);
     YT.opt = _opt;                       /* v2.356: ytRefit 要复用它重算方块的宽高 */
+    /* v2.358 (用户 m37552): 先粗后细。
+       5,585 只个股的全量 setOption 要 1.0~1.3 秒, 这段时间 canvas 上是空的,
+       用户看到的就是「点了没反应」。先出一版只画大块(visibleMin 1600, 实测 359ms),
+       紧接着下一行再出全量 —— 0.36 秒就能看到板块红绿分布, 个股细块随后补上。
+       粗版必须**另建一份 option**: 改 visibleMin 会污染 _opt, 而 _opt 之后
+       还要交给 ytFitLabels 按真实 layout 两遍收敛(code 档)。 */
+    try{
+      /* v2.358c: 粗版只为「第一眼」服务 —— 真数据覆盖时用户正看着上一版,
+         再画一遍同样的粗图纯属多占主线程(实测 170ms), 直接跳过画全量。 */
+      if(!YT.needCoarse) throw '_skip_coarse';
+      var _copt = ytBuildOption(d);
+      _copt.series[0].visibleMin = 1600;
+      YT.chart.setOption(_copt, true);
+      YT.needCoarse = 0;
+      /* v2.358b (实测反证 v2.358): 两次 setOption 若在**同一个同步任务**里跑完,
+         浏览器根本没机会把这中间结果刷到屏上 —— 实测粗版插在前面反而更慢
+         (ind_tx 1010ms → 2202ms)。必须让出一帧: rAF 里再画全量。
+         用闭包变量记本次请求, 等待期间用户切档就作废这一次。 */
+      var _rid = (YT.rid || 0) + 1; YT.rid = _rid;
+      var _go = function(){
+        if(YT.rid !== _rid) return;          /* 期间又触发过一次重画, 这次作废 */
+        if(!YT.chart) return;
+        try{ YT.chart.setOption(_opt, true); }
+        catch(_e3){ ytMsg('渲染失败: ' + (_e3 && _e3.message), 'err'); return; }
+        if(YT.depth === 'code'){
+          for(var _it2=0; _it2<3; _it2++){
+            if(!ytFitLabels(_opt)) break;
+            YT.chart.setOption({ series: [{ data: _opt.series[0].data }] }, false);
+          }
+        }
+      };
+      if(window.requestAnimationFrame) requestAnimationFrame(function(){ _go(); });
+      else setTimeout(_go, 16);
+      ytPaintBtns();
+      return;                              /* 细版交给 rAF 接手 */
+    }catch(_ce){}
     YT.chart.setOption(_opt, true);
     /* v2.356: 只有「三层全画」才会出现 10px 宽的方块 —— 按真实 layout 两遍收敛。 */
     if(YT.depth === 'code'){
@@ -15153,7 +15253,8 @@ function ytRender(){
         YT.chart.setOption({ series: [{ data: _opt.series[0].data }] }, false);
       }
     }
-    YT.chart.resize();
+    /* v2.357: 这里原来有一句 YT.chart.resize() —— 实测 200~800ms 白花,
+       setOption 之后 treemap 根矩形已经等于画布尺寸(1706x992 == 1706x992)。 */
   }catch(e){
     ytMsg('渲染失败: ' + (e && e.message), 'err');
     return;
