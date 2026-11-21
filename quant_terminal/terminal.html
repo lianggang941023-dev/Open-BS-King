@@ -19293,26 +19293,25 @@ window.ldrLhbPick = ldrLhbPick; window.ldrLhbInst = ldrLhbInst; window.ldrLhbDep
       </div>
     </div>
   </div>
-  <!-- v2.359: 指数一览页（先放七大指数, 用户后续再挑更多） -->
-  <div id="mkt-pane-idxlist" style="display:none;flex:1;min-height:0;padding:6px;flex-direction:column;gap:6px">
-    <div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">
-      <span id="idxl-title" style="font-size:12px;font-weight:700;color:var(--gold)">指数一览</span>
-      <span id="idxl-sub" style="font-size:10px;color:var(--tx2)"></span>
-      <span style="flex:1"></span>
-      <span style="font-size:9px;color:var(--tx3)">区间</span>
-      <span id="idxl-range-wrap" style="display:flex;gap:4px">
-        <button class="btn sm" data-ir="120" onclick="idxListSetRange(120)" style="font-size:10px;padding:2px 9px">半年</button>
-        <button class="btn sm" data-ir="260" onclick="idxListSetRange(260)" style="font-size:10px;padding:2px 9px">1年</button>
-        <button class="btn sm" data-ir="520" onclick="idxListSetRange(520)" style="font-size:10px;padding:2px 9px">2年</button>
-        <button class="btn sm" data-ir="0"   onclick="idxListSetRange(0)"   style="font-size:10px;padding:2px 9px">全部</button>
-      </span>
-      <span id="idxl-msg" style="font-size:10px;color:var(--tx2)"></span>
-    </div>
-    <div style="flex:0 0 auto;display:grid;grid-template-columns:repeat(7,1fr);gap:6px" id="idxl-cards"></div>
-    <div style="flex:1 1 auto;min-height:0;position:relative">
-      <div id="idxl-chart" style="position:absolute;left:0;top:0;right:0;bottom:0"></div>
+  <!-- v2.363 (2026-11-21 用户 m39345): 指数一览 = 左列指数 + 右侧上日K / 下分时 -->
+  <div id="mkt-pane-idxlist" style="display:none;flex:1;min-height:0;padding:6px;flex-direction:row;gap:6px">
+    <div id="idxl-list" style="flex:0 0 168px;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:2px"></div>
+    <div style="flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;gap:4px">
+      <div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">
+        <span id="idxl-title" style="font-size:12px;font-weight:700;color:var(--gold)">指数一览</span>
+        <span id="idxl-sub" style="font-size:10px;color:var(--tx2)"></span>
+        <span style="flex:1"></span>
+        <span id="idxl-msg" style="font-size:10px;color:var(--tx2)"></span>
+      </div>
+      <div style="flex:1 1 55%;min-height:0;position:relative">
+        <div id="idxl-k" style="position:absolute;left:0;top:0;right:0;bottom:0"></div>
+      </div>
+      <div style="flex:1 1 45%;min-height:0;position:relative">
+        <div id="idxl-m" style="position:absolute;left:0;top:0;right:0;bottom:0"></div>
+      </div>
     </div>
   </div>
+
 </div>
 <div id="rps-win" style="display:none;flex-direction:column;position:fixed;z-index:10020;background:var(--win);border:1px solid var(--bd2);box-shadow:0 0 32px var(--sh-lg);border-radius:6px;overflow:hidden;font-size:10px;color:var(--tx0)">
   <!-- ── 标题栏 ── -->
@@ -20306,111 +20305,261 @@ function idxpBindResize(){
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
-   指数一览
+   v2.363 (2026-11-21 用户 m39345): 指数一览 —— 左列指数纵向列表 + 右侧上日K下分时
+
+   用户原话：
+     「我要的是窗口中左侧给各种指数纵向排列，点击对应指数后，左侧上方显示日K，
+       下方显示最新分时图，现在只有七大指数，还要加上前面新增的可替换到七大指数里
+       的指数如同花顺全A，然后还有个中证红利指数，也可以加到指数一览，
+       和顶部指数栏可替换选项里」
+
+   数据:
+     - 列表价格走 /api/idx_list?limit=2（本地存档, 零网络）
+     - 日K 走 /api/kline?code=<code>&limit=120（指数全量; 883957 走同花顺通路）
+     - 分时 走 /api/mini_minute?kind=index&code=<code>（241~242 点, 开高低现齐全）
+   注意:
+     - /api/kline 的 bars 每项是 [open, close, low, high] —— 与 ECharts candlestick 同序,
+       别按 o/h/l/c 理解（v2.361 在这上面栽过)。
+     - /api/kline 不带 limit 时返回的是 ohlc 字段, 带 limit 才是 bars。
    ══════════════════════════════════════════════════════════════════════════════ */
-var IDXL_COLS = ['#f0c040', '#00c8e0', '#f09030', '#a080f0', '#00e070', '#f060a0', '#4aa8ff'];
+var IDXL_LS = 'qt_idxlist_v1';
+var idxlSt = {rows: [], cur: '', ck: null, cm: null, chart: null,
+              bound: false, loading: false, kdata: null, mdata: null};
 
 function idxlMsg(t, k){
   var e = $('idxl-msg'); if(!e) return;
   e.textContent = t || '';
   e.style.color = (k === 'err') ? 'var(--dn)' : (k === 'ok' ? 'var(--tx2)' : 'var(--gold)');
 }
-
-function idxlPaintRange(){
-  var w = $('idxl-range-wrap'); if(!w) return;
-  var bs = w.querySelectorAll('button[data-ir]');
-  for(var i = 0; i < bs.length; i++){
-    var on = (String(bs[i].getAttribute('data-ir')) === String(idxlSt.range));
-    bs[i].style.background = on ? 'rgba(240,192,64,0.16)' : '';
-    bs[i].style.color = on ? 'var(--gold)' : '';
-    bs[i].style.borderColor = on ? 'var(--gold)' : '';
-  }
+function idxlSaved(){
+  try{ return localStorage.getItem(IDXL_LS) || ''; }catch(e){ return ''; }
+}
+function idxlSave(code){
+  try{ if(code) localStorage.setItem(IDXL_LS, code); }catch(e){}
+}
+function idxlCol(v){
+  if(v == null || isNaN(v)) return 'var(--tx2)';
+  return (+v) > 0 ? 'var(--up)' : ((+v) < 0 ? 'var(--dn)' : 'var(--tx2)');
+}
+function idxlPct(v){
+  if(v == null || isNaN(v)) return '--';
+  return ((+v) > 0 ? '+' : '') + (+v).toFixed(2) + '%';
 }
 
-function idxlDrawCards(){
-  var box = $('idxl-cards'); if(!box) return;
+/* ── 左列：指数纵向列表 ─────────────────────────────────────── */
+function idxlPaintList(){
+  var box = $('idxl-list'); if(!box) return;
   var rows = idxlSt.rows || [];
-  var h = '';
-  for(var i = 0; i < rows.length; i++){
+  var h = '', i;
+  for(i = 0; i < rows.length; i++){
     var r = rows[i];
-    var c = (r.pct == null) ? 'var(--tx2)' : ((r.pct > 0) ? 'var(--up)' : (r.pct < 0 ? 'var(--dn)' : 'var(--tx2)'));
-    h += '<div style="background:var(--c-card);border:1px solid var(--bd);border-radius:3px;padding:4px 6px;min-width:0">'
-      +  '<div style="font-size:10px;color:var(--tx2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"'
-      +  ' title="' + r.name + ' (' + r.code + ') · 本地 ' + r.n + ' 根 · ' + r.start + ' 起">' + r.short + '</div>'
-      +  '<div style="font-size:13px;font-weight:700;font-family:ui-monospace,Consolas,monospace;color:' + c + '">'
-      +  (r.last == null ? '--' : (+r.last).toFixed(2)) + '</div>'
-      +  '<div style="font-size:9px;color:' + c + '">'
-      +  (r.pct == null ? '' : ((r.pct > 0 ? '+' : '') + (+r.pct).toFixed(2) + '%')) + '</div>'
+    var on = (r.code === idxlSt.cur);
+    var c = idxlCol(r.pct);
+    h += '<div class="idxl-li" data-code="' + escAttr(r.code) + '" onclick="idxListPick(\'' + escAttr(r.code) + '\')" '
+      +  'style="cursor:pointer;padding:4px 7px;border-radius:3px;border-left:2px solid '
+      +  (on ? 'var(--gold)' : 'transparent') + ';'
+      +  'background:' + (on ? 'rgba(240,192,64,0.12)' : 'transparent') + ';'
+      +  'display:flex;align-items:baseline;gap:5px;white-space:nowrap;overflow:hidden">'
+      +  '<span style="font-size:11px;color:' + (on ? 'var(--gold)' : 'var(--tx0)')
+      +  ';font-weight:' + (on ? '700' : '400') + ';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">'
+      +  escAttr(r.short || r.name || r.code) + '</span>'
+      +  '<span style="font-size:10px;font-family:ui-monospace,Consolas,monospace;color:var(--tx2);flex:0 0 auto">'
+      +  (r.last == null ? '--' : (+r.last).toFixed(2)) + '</span>'
+      +  '<span style="font-size:9px;font-family:ui-monospace,Consolas,monospace;color:' + c
+      +  ';flex:0 0 46px;text-align:right">' + idxlPct(r.pct) + '</span>'
       +  '</div>';
   }
-  box.innerHTML = h;
+  box.innerHTML = h || '<div style="font-size:10px;color:var(--tx3);padding:6px">无数据</div>';
+  /* 选中项滚进视野 */
+  try{
+    var sel = box.querySelector('.idxl-li[data-code="' + idxlSt.cur + '"]');
+    if(sel && sel.scrollIntoView) sel.scrollIntoView({block: 'nearest'});
+  }catch(e){}
 }
 
-function idxlDraw(){
-  var box = $('idxl-chart'); if(!box) return;
-  var rows = idxlSt.rows || [];
-  if(!rows.length) return;
-  /* v2.359b: 同 idxpDraw —— readTheme() 没有返回值, 取全局 TH */
+/* ── 右上：日K（含 MA5/10/20 + 成交量） ─────────────────────── */
+function idxlDrawK(){
+  var box = $('idxl-k'); if(!box) return;
+  var d = idxlSt.kdata; if(!d || !d.ok) return;
   if(typeof readTheme === 'function'){ try{ readTheme(); }catch(e){} }
   var TH2 = (typeof TH === 'object' && TH) ? TH : {};
-  var cTx2 = TH2.tx2 || '#8a8a9a';
-  var cSplit = TH2.split || 'rgba(255,255,255,0.06)';
-  var lim = idxlSt.range;
-  /* 全部日期并集(按字典序), 各指数对齐到自己有值的那天 —— 停牌/未上市留 null */
-  var all = {}, i, j;
-  for(i = 0; i < rows.length; i++){
-    var ds = rows[i].dates || [];
-    for(j = 0; j < ds.length; j++) all[ds[j]] = 1;
+  var dates = d.dates || [], bars = d.bars || [], vol = d.volume || [];
+  if(!dates.length) return;
+  /* MA 自己算 —— /api/kline 带 limit 时不返回 mas */
+  function ma(n){
+    var out = [], sum = 0, i;
+    for(i = 0; i < bars.length; i++){
+      var c = bars[i] ? bars[i][1] : null;
+      sum += (c == null ? 0 : c);
+      if(i >= n) { var old = bars[i - n] ? bars[i - n][1] : 0; sum -= (old == null ? 0 : old); }
+      out.push(i >= n - 1 ? +(sum / n).toFixed(3) : null);
+    }
+    return out;
   }
-  var dates = Object.keys(all).sort();
-  if(lim && dates.length > lim) dates = dates.slice(-lim);
-  var ser = [];
-  for(i = 0; i < rows.length; i++){
-    var r = rows[i], m = {};
-    var ds2 = r.dates || [], cs2 = r.closes || [];
-    for(j = 0; j < ds2.length; j++) m[ds2[j]] = cs2[j];
-    var arr = [];
-    for(j = 0; j < dates.length; j++) arr.push(m[dates[j]] == null ? null : m[dates[j]]);
-    var col = IDXL_COLS[i % IDXL_COLS.length];
-    ser.push({
-      name: r.short, type: 'line', data: arr, showSymbol: false, connectNulls: false,
-      lineStyle: {width: 1.1, color: col}, itemStyle: {color: col},
-      emphasis: {focus: 'series'}
-    });
+  var vd = [], i2;
+  for(i2 = 0; i2 < vol.length; i2++){
+    vd.push({value: vol[i2], itemStyle: {color: (bars[i2] && bars[i2][1] >= bars[i2][0]) ? TH2.up : TH2.dn}});
   }
-  if(idxlSt.chart){ try{ idxlSt.chart.dispose(); }catch(e){} idxlSt.chart = null; }
+  if(idxlSt.ck){ try{ idxlSt.ck.dispose(); }catch(e){} idxlSt.ck = null; }
   box.innerHTML = '';
-  idxlSt.chart = echarts.init(box);
-  idxlSt.chart.setOption({
-    animation: false,
-    backgroundColor: 'transparent',
-    color: IDXL_COLS,
-    grid: {left: 54, right: 18, top: 30, bottom: 26},
-    legend: {show: true, top: 4, textStyle: {color: cTx2, fontSize: 10}, itemWidth: 12, itemHeight: 6,
-             data: ser.map(function(s){ return s.name; })},
-    tooltip: {
-      trigger: 'axis',
-      axisPointer: {type: 'cross', label: {backgroundColor: 'rgba(60,60,72,0.92)'}},
-      backgroundColor: 'rgba(24,24,30,0.94)',
-      borderColor: 'rgba(255,255,255,0.14)',
-      textStyle: {color: '#e0e0f0', fontSize: 10}
-    },
-    xAxis: {
-      type: 'category', data: dates, boundaryGap: false,
-      axisLine: {lineStyle: {color: cTx2}},
-      axisLabel: {color: cTx2, fontSize: 9, hideOverlap: true},
-      axisTick: {show: false}
-    },
-    yAxis: {
-      type: 'value', scale: true,
-      axisLabel: {color: cTx2, fontSize: 9},
-      splitLine: {lineStyle: {color: cSplit}}
-    },
-    dataZoom: [{type: 'inside', start: 0, end: 100}],
-    series: ser
+  var ch = echarts.init(box);
+  idxlSt.ck = ch; idxlSt.chart = ch;
+  ch.setOption({
+    animation: false, backgroundColor: 'transparent',
+    grid: [{left: 54, right: 12, top: 22, bottom: '26%'},
+           {left: 54, right: 12, bottom: 8, height: '16%'}],
+    tooltip: {trigger: 'axis', axisPointer: {type: 'cross'},
+              backgroundColor: 'rgba(24,24,30,0.94)', borderColor: 'rgba(255,255,255,0.14)',
+              textStyle: {color: '#e0e0f0', fontSize: 10}},
+    legend: {show: true, top: 2, left: 54, itemWidth: 12, itemHeight: 6,
+             textStyle: {color: TH2.tx2 || '#8a8a9a', fontSize: 9},
+             data: ['MA5', 'MA10', 'MA20']},
+    xAxis: [{type: 'category', data: dates, gridIndex: 0, boundaryGap: true,
+             axisLabel: {show: false}, axisTick: {show: false},
+             axisLine: {lineStyle: {color: TH2.bd}}},
+            {type: 'category', data: dates, gridIndex: 1,
+             axisLabel: {color: TH2.tx2, fontSize: 9, hideOverlap: true}, axisTick: {show: false},
+             axisLine: {lineStyle: {color: TH2.bd}}}],
+    yAxis: [{scale: true, gridIndex: 0, axisLabel: {color: TH2.tx2, fontSize: 9},
+             splitLine: {lineStyle: {color: TH2.split}}},
+            {gridIndex: 1, axisLabel: {show: false}, splitLine: {show: false}}],
+    dataZoom: [{type: 'inside', xAxisIndex: [0, 1], start: 40, end: 100}],
+    series: [
+      {name: 'K', type: 'candlestick', data: bars, barMaxWidth: 7,
+       itemStyle: {color: TH2.up, color0: TH2.dn, borderColor: TH2.up, borderColor0: TH2.dn}},
+      {name: 'MA5', type: 'line', data: ma(5), symbol: 'none', smooth: true,
+       lineStyle: {width: 1, color: '#f0c040'}},
+      {name: 'MA10', type: 'line', data: ma(10), symbol: 'none', smooth: true,
+       lineStyle: {width: 1, color: '#00c8e0'}},
+      {name: 'MA20', type: 'line', data: ma(20), symbol: 'none', smooth: true,
+       lineStyle: {width: 1, color: '#f060a0'}},
+      {name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: vd, barMaxWidth: 7}
+    ]
   }, true);
-  try{ idxlSt.chart.resize(); }catch(e){}
-  idxpBindResize();
+  try{ ch.resize(); }catch(e){}
+}
+
+/* ── 右下：当日分时（含 0 轴与现价线 + 开高低现角标） ──────── */
+function idxlDrawM(){
+  var box = $('idxl-m'); if(!box) return;
+  var dd = idxlSt.mdata; if(!dd || !dd.ok) return;
+  var L = (dd.lines || [])[0]; if(!L) return;
+  if(typeof readTheme === 'function'){ try{ readTheme(); }catch(e){} }
+  var TH2 = (typeof TH === 'object' && TH) ? TH : {};
+  var times = L.times || [], prices = L.prices || [], pre = +L.pre || 0;
+  if(!times.length) return;
+  var lo = pre, hi = pre, i;
+  for(i = 0; i < prices.length; i++){
+    if(prices[i] == null) continue;
+    if(prices[i] < lo) lo = prices[i];
+    if(prices[i] > hi) hi = prices[i];
+  }
+  var pad = (hi - lo) * 0.08 || (pre * 0.005) || 0.01;
+  /* v2.363c: min/max 先 round 到两位 —— 原来直接喂 lo-pad/hi+pad (浮点),
+     ECharts 会把这个浮点原样印成刻度文字, 实测左轴顶端冒出
+     `1,568.3025599999999` 并溢出到画布外 (x=-48)。 */
+  var yMin = Math.round((lo - pad) * 100) / 100;
+  var yMax = Math.round((hi + pad) * 100) / 100;
+  var yIv = Math.round((yMax - yMin) / 5 * 100) / 100;   /* 5 段, 与左轴 6 个刻度对齐 */
+  var last = prices.length ? prices[prices.length - 1] : null;
+  var pctOf = function(v){ return pre > 0 ? (v - pre) / pre * 100 : 0; };
+  var pctTx = function(v){ var p = pctOf(v); return (p > 0 ? '+' : '') + p.toFixed(2) + '%'; };
+  var mk = {silent: true, symbol: 'none', animation: false, data: []};
+  if(pre > 0){
+    mk.data.push({yAxis: pre, lineStyle: {color: TH2.tx2, type: 'dashed', width: 1, opacity: .75},
+                  label: {show: true, formatter: '0.00%', position: 'insideEndBottom',
+                          color: TH2.apLblFg, backgroundColor: TH2.apLblBg, fontSize: 9}});
+  }
+  if(last != null && pre > 0 && Math.abs(last - pre) > 1e-9){
+    var pc = pctOf(last);
+    mk.data.push({yAxis: last,
+                  lineStyle: {color: 'rgba(255,120,130,0.9)', type: 'dashed', width: 1},
+                  label: {show: true, formatter: pctTx(last), position: 'insideEndTop',
+                          color: TH2.apLblFg, backgroundColor: TH2.apLblBg, fontSize: 9, fontWeight: 600,
+                          borderColor: pc > 0 ? TH2.up : (pc < 0 ? TH2.dn : 'transparent'), borderWidth: 1}});
+  }
+  if(idxlSt.cm){ try{ idxlSt.cm.dispose(); }catch(e){} idxlSt.cm = null; }
+  box.innerHTML = '';
+  var ch = echarts.init(box);
+  idxlSt.cm = ch;
+  ch.setOption({
+    animation: false, backgroundColor: 'transparent',
+    /* v2.363d: top 10 -> 12 / bottom 20 -> 22。原来最上一条刻度文字基线落在 y=6,
+       已高过 grid 顶边(10)被裁; 左右各留 2px 让浮点 round 后的端点刻度有落处。 */
+    grid: {left: 54, right: 46, top: 12, bottom: 22},
+    tooltip: {trigger: 'axis',
+              backgroundColor: 'rgba(24,24,30,0.94)', borderColor: 'rgba(255,255,255,0.14)',
+              textStyle: {color: '#e0e0f0', fontSize: 10},
+              formatter: function(ps){
+                var p = ps && ps[0]; if(!p) return '';
+                var v = +p.value;
+                return p.axisValue.slice(0, 2) + ':' + p.axisValue.slice(2)
+                  + '<br/>' + (isNaN(v) ? '--' : v.toFixed(3)) + '  ' + (isNaN(v) ? '' : pctTx(v));
+              }},
+    xAxis: {type: 'category', data: times, boundaryGap: false,
+            axisLabel: {color: TH2.tx2, fontSize: 9, hideOverlap: true,
+                        formatter: function(v){ return v.slice(0, 2) + ':' + v.slice(2); }},
+            axisTick: {show: false}, axisLine: {lineStyle: {color: TH2.bd}}},
+    yAxis: [{scale: false, min: yMin, max: yMax, interval: yIv,
+             axisLabel: {color: TH2.tx2, fontSize: 9,
+                         formatter: function(v){ return (+v).toFixed(2); }},
+             splitLine: {lineStyle: {color: TH2.split}}},
+            {scale: false, min: yMin, max: yMax, interval: yIv,
+             position: 'right', splitNumber: 5,
+             axisLabel: {show: pre > 0, color: TH2.tx2, fontSize: 9,
+                         formatter: function(v){ return (pctOf(+v) > 0 ? '+' : '') + pctOf(+v).toFixed(2) + '%'; }},
+             splitLine: {show: false}}],
+    series: [{type: 'line', data: prices, showSymbol: false, connectNulls: false,
+              lineStyle: {width: 1.2, color: TH2.gold}, itemStyle: {color: TH2.gold},
+              areaStyle: {color: 'rgba(240,192,64,0.06)'},
+              markLine: mk.data.length ? mk : undefined}]
+  }, true);
+  try{ ch.resize(); }catch(e){}
+  /* 开高低现角标 */
+  var sub = $('idxl-sub');
+  if(sub && pre > 0){
+    var seg = [];
+    if(L.open_pct != null) seg.push('开 ' + (pre * (1 + L.open_pct / 100)).toFixed(2) + ' ' + pctTx(pre * (1 + L.open_pct / 100)));
+    if(L.high_pct != null) seg.push('高 ' + (pre * (1 + L.high_pct / 100)).toFixed(2) + ' ' + pctTx(pre * (1 + L.high_pct / 100)));
+    if(L.low_pct != null) seg.push('低 ' + (pre * (1 + L.low_pct / 100)).toFixed(2) + ' ' + pctTx(pre * (1 + L.low_pct / 100)));
+    if(L.last_pct != null) seg.push('现 ' + (pre * (1 + L.last_pct / 100)).toFixed(2) + ' ' + pctTx(pre * (1 + L.last_pct / 100)));
+    sub.textContent = (L.name || '') + ' · ' + (L.date || '') + ' · ' + seg.join(' · ');
+  }
+}
+
+/* ── 取数 ─────────────────────────────────────────────────── */
+async function idxlLoadK(code){
+  try{
+    var d = await api('/api/kline?code=' + encodeURIComponent(code) + '&limit=120');
+    /* v2.363b: 过期响应直接丢 —— 连点两只时, 上一只的网络回来得晚,
+       不判 cur 会把已经画好的新图整个盖掉 (真机复现过: cur 是新的, sub 还是老的) */
+    if(idxlSt.cur !== code) return;
+    if(!d || d._err || !d.ok){ idxlMsg('日K取数失败', 'err'); return; }
+    idxlSt.kdata = d;
+    idxlDrawK();
+  }catch(e){ if(idxlSt.cur === code) idxlMsg('日K渲染失败: ' + (e && e.message), 'err'); }
+}
+async function idxlLoadM(code){
+  try{
+    var d = await api('/api/mini_minute?kind=index&code=' + encodeURIComponent(code));
+    /* v2.363b: 同 idxlLoadK —— 过期响应丢弃 */
+    if(idxlSt.cur !== code) return;
+    if(!d || d._err || !d.ok){ idxlMsg('分时取数失败', 'err'); return; }
+    if(d.stale) idxlMsg('分时为上一交易日缓存', 'busy');
+    idxlSt.mdata = d;
+    idxlDrawM();
+  }catch(e){ if(idxlSt.cur === code) idxlMsg('分时渲染失败: ' + (e && e.message), 'err'); }
+}
+
+/* ── 选中某只 ─────────────────────────────────────────────── */
+function idxListPick(code){
+  code = String(code || '').trim().toLowerCase();
+  if(!code) return;
+  idxlSt.cur = code;
+  idxlSave(code);
+  idxlPaintList();
+  idxlMsg('加载中…');
+  idxlLoadK(code).then(function(){ return idxlLoadM(code); }).then(function(){ idxlMsg(''); });
 }
 
 async function idxListLoad(){
@@ -20418,21 +20567,20 @@ async function idxListLoad(){
   idxlSt.loading = true;
   try{
     idxlMsg('加载中…');
-    /* ★ 只读本地存档。range=0 表示全部; 前端传 0 时后端按 0 处理(=不过滤) */
-    var d = await api('/api/idx_list?limit=0');
+    var d = await api('/api/idx_list?limit=2');
     if(d && d._err){ idxlMsg('取数失败: ' + d._err, 'err'); return; }
     if(!d || !d.ok){ idxlMsg('取数失败', 'err'); return; }
     idxlSt.rows = d.rows || [];
-    idxlPaintRange();
-    idxlDrawCards();
-    idxlDraw();
-    var sub = $('idxl-sub');
-    if(sub){
-      var n0 = idxlSt.rows.length, deep = 0;
-      for(var i = 0; i < n0; i++){ if(idxlSt.rows[i].n > deep) deep = idxlSt.rows[i].n; }
-      sub.textContent = n0 + ' 只 · 本地最长 ' + deep + ' 根';
-      sub.title = '数据全部来自本地 kline_data/index_daily（关闭终端也会保留），增量由后端 idx_store.sync 补充';
-    }
+    /* 恢复上次选中；不在列表里就落到第一只 */
+    var want = idxlSaved();
+    var has = false, i;
+    for(i = 0; i < idxlSt.rows.length; i++){ if(idxlSt.rows[i].code === want){ has = true; break; } }
+    if(!has) want = idxlSt.rows.length ? idxlSt.rows[0].code : '';
+    idxlSt.cur = want;
+    idxlPaintList();
+    var t = $('idxl-title');
+    if(t) t.textContent = '指数一览';
+    if(want){ await idxlLoadK(want); await idxlLoadM(want); }
     idxlMsg('');
   }catch(e){
     idxlMsg('渲染失败: ' + (e && e.message), 'err');
@@ -20443,19 +20591,32 @@ async function idxListLoad(){
 
 async function idxListEnter(){
   if(!idxlSt.rows.length) await idxListLoad();
-  else { idxlPaintRange(); idxlDrawCards(); idxlDraw(); }
+  else { idxlPaintList(); idxlDrawK(); idxlDrawM(); }
+}
+function idxListReload(){
+  idxlSt.rows = [];
+  return idxListLoad();
 }
 
-function idxListSetRange(n){
-  idxlSt.range = (n == null) ? 0 : (+n);
-  idxlPaintRange();
-  idxlDraw();
-}
+/* 窗口缩放: 两图都要重算 */
+(function(){
+  window.addEventListener('resize', function(){
+    try{ if(idxlSt.ck) idxlSt.ck.resize(); }catch(e){}
+    try{ if(idxlSt.cm) idxlSt.cm.resize(); }catch(e){}
+  });
+})();
 
-function idxListReload(){ return idxListLoad(); }
+/* v2.363: 内联 onclick 走全局作用域 —— 必须显式挂到 window 上
+   （v2.277 板块窗 / v2.353 云图 / v2.360 顶栏右键菜单 都栽过同一条） */
+window.idxListPick = idxListPick;
+window.idxListEnter = idxListEnter;
+window.idxListReload = idxListReload;
 
 window.idxPairPick = idxPairPick;
-window.idxListSetRange = idxListSetRange;
+/* v2.363c: `window.idxListSetRange = idxListSetRange;` 已删 —— v2.363 把「半年/1年/2年/全部」
+   那排区间按钮和它对应的 idxListSetRange() 一起拿掉了，这行导出就成了对**不存在的函数**的引用，
+   页面加载即 ReferenceError（不报在界面上，只在控制台，属于「看着没事、其实一直在抛」）。
+   以后删函数必须顺手搜一遍 window.xxx = xxx 的导出行。 */
 window.mktTabTap = mktTabTap;
 
 /* ── 工具 ─────────────────────────────────────────────────── */
