@@ -19295,7 +19295,7 @@ window.ldrLhbPick = ldrLhbPick; window.ldrLhbInst = ldrLhbInst; window.ldrLhbDep
   </div>
   <!-- v2.363 (2026-11-21 用户 m39345): 指数一览 = 左列指数 + 右侧上日K / 下分时 -->
   <div id="mkt-pane-idxlist" style="display:none;flex:1;min-height:0;padding:6px;flex-direction:row;gap:6px">
-    <div id="idxl-list" style="flex:0 0 168px;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:2px"></div>
+    <div id="idxl-list" style="flex:0 0 244px;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:2px"></div>
     <div style="flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;gap:4px">
       <div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">
         <span id="idxl-title" style="font-size:12px;font-weight:700;color:var(--gold)">指数一览</span>
@@ -20367,6 +20367,14 @@ function idxlPaintList(){
       +  (r.last == null ? '--' : (+r.last).toFixed(2)) + '</span>'
       +  '<span style="font-size:9px;font-family:ui-monospace,Consolas,monospace;color:' + c
       +  ';flex:0 0 46px;text-align:right">' + idxlPct(r.pct) + '</span>'
+      /* v2.364 (用户 m39650): 涨跌幅后面带趋势判定词 —— 与顶栏悬停浮窗同一个口径
+         (engine._regime_from_rows 的 MA21+ADX14+20日高低)。后端行里没有 regime 时
+         整格留空(而不是画 undefined), 颜色沿用 IDX_REGIME_COLORS。 */
+      +  '<span style="font-size:9px;flex:0 0 56px;text-align:right;overflow:hidden;'
+      +  'text-overflow:ellipsis;white-space:nowrap;color:'
+      +  ((typeof IDX_REGIME_COLORS === 'object' && IDX_REGIME_COLORS[r.regime])
+              ? IDX_REGIME_COLORS[r.regime] : 'var(--tx3)') + '">'
+      +  escAttr(r.regime || '') + '</span>'
       +  '</div>';
   }
   box.innerHTML = h || '<div style="font-size:10px;color:var(--tx3);padding:6px">无数据</div>';
@@ -20380,11 +20388,16 @@ function idxlPaintList(){
 /* ── 右上：日K（含 MA5/10/20 + 成交量） ─────────────────────── */
 function idxlDrawK(){
   var box = $('idxl-k'); if(!box) return;
-  var d = idxlSt.kdata; if(!d || !d.ok) return;
+  var d = idxlSt.kdata;
+  /* v2.365: 全量指数接口不带 ok 键(只有 limit 那条路径带), 判据改成看数据本身 */
+  if(!d || (!d.ok && !(d.dates && d.dates.length))) return;
   if(typeof readTheme === 'function'){ try{ readTheme(); }catch(e){} }
   var TH2 = (typeof TH === 'object' && TH) ? TH : {};
-  var dates = d.dates || [], bars = d.bars || [], vol = d.volume || [];
-  if(!dates.length) return;
+  var dates = d.dates || [], vol = d.volume || [];
+  /* v2.365: 带 limit 时后端回 bars[[o,c,l,h],…]; 不带 limit 时回 ohlc[[o,c,l,h],…]
+     两者元素顺序完全一样(ECharts candlestick 同序), 直接拿来当 bars 用。 */
+  var bars = d.bars || d.ohlc || [];
+  if(!dates.length || !bars.length) return;
   /* MA 自己算 —— /api/kline 带 limit 时不返回 mas */
   function ma(n){
     var out = [], sum = 0, i;
@@ -20423,7 +20436,11 @@ function idxlDrawK(){
     yAxis: [{scale: true, gridIndex: 0, axisLabel: {color: TH2.tx2, fontSize: 9},
              splitLine: {lineStyle: {color: TH2.split}}},
             {gridIndex: 1, axisLabel: {show: false}, splitLine: {show: false}}],
-    dataZoom: [{type: 'inside', xAxisIndex: [0, 1], start: 40, end: 100}],
+    /* v2.365: 原来写死 start:40 —— 给全量也只看得到后 60%。
+       改成按根数算: 默认显示最后 120 根, 拖到最左能看到全部历史。 */
+    dataZoom: [{type: 'inside', xAxisIndex: [0, 1],
+                start: (bars.length > 120 ? (100 - 100 * 120 / bars.length) : 0),
+                end: 100}],
     series: [
       {name: 'K', type: 'candlestick', data: bars, barMaxWidth: 7,
        itemStyle: {color: TH2.up, color0: TH2.dn, borderColor: TH2.up, borderColor0: TH2.dn}},
@@ -20530,11 +20547,19 @@ function idxlDrawM(){
 /* ── 取数 ─────────────────────────────────────────────────── */
 async function idxlLoadK(code){
   try{
-    var d = await api('/api/kline?code=' + encodeURIComponent(code) + '&limit=120');
+    /* v2.365 (用户 m39725): 原写死 &limit=120 ⇒ 只画最近 120 个交易日(正好回到
+       2026-05-28)。改成不带 limit 取本地全量 —— 后端 _serve_index_kline 会把
+       kline_data/index_daily 整个文件读出来, 本地最深的 SH000016 有 5557 根。
+       注意全量回的是 ohlc(o,c,l,h) 不是 bars, 且没有 ok 键, 画图函数要两种都认。 */
+    var d = await api('/api/kline?code=' + encodeURIComponent(code));
     /* v2.363b: 过期响应直接丢 —— 连点两只时, 上一只的网络回来得晚,
        不判 cur 会把已经画好的新图整个盖掉 (真机复现过: cur 是新的, sub 还是老的) */
     if(idxlSt.cur !== code) return;
-    if(!d || d._err || !d.ok){ idxlMsg('日K取数失败', 'err'); return; }
+    /* v2.365b: 全量指数接口不带 ok 键（只有 limit 那条带），原来判 !d.ok 会把
+       正常数据当失败丢掉、图上一片空白。改成看数据本身。 */
+    if(!d || d._err || d.ok === false || !(d.dates && d.dates.length)){
+      idxlMsg('日K取数失败', 'err'); return;
+    }
     idxlSt.kdata = d;
     idxlDrawK();
   }catch(e){ if(idxlSt.cur === code) idxlMsg('日K渲染失败: ' + (e && e.message), 'err'); }

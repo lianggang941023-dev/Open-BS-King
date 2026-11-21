@@ -136,6 +136,45 @@ def fetch_sina_daily(code: str, datalen: int = 1500) -> Optional[List[Dict]]:
         return None
 
 
+def _fetch_index_paged(code: str, max_pages: int = 8, page: int = 2000) -> List[Dict]:
+    """腾讯分段往前翻页，拼出该指数**尽可能早**的完整日线（按日期去重）。
+
+    v2.366 新增。腾讯 fqkline 单次硬上限 2000 根，但带 `end=` 可以一直往更早翻：
+      实测 sh000922 / sh000300 → 2005-01-04 起 5314 根；sh000016 → 2004-01-02 起 5557 根。
+
+    停止条件（三个，任一命中即停）：
+      · 本页不满 page 根 ⇒ 已经到上市日
+      · 本页最早日期不再前移 ⇒ 上游不认 end 参数了，防死循环
+      · 翻够 max_pages 页
+    """
+    seen = {}
+    end = ''
+    prev_earliest = None
+    for _i in range(max(1, int(max_pages))):
+        try:
+            arr = _norm_tencent_bars(_fqkline_req(code, count=str(page), end=end), code) or []
+        except Exception:
+            arr = []
+        if not arr:
+            break
+        for b in arr:
+            seen[b['date']] = b
+        earliest = arr[0]['date']
+        if len(arr) < page:
+            break
+        if prev_earliest is not None and earliest >= prev_earliest:
+            break
+        prev_earliest = earliest
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+            end = (_dt.strptime(earliest, '%Y-%m-%d') - _td(days=1)).strftime('%Y-%m-%d')
+        except Exception:
+            break
+        if end <= '1991-01-01':
+            break
+    return [seen[k] for k in sorted(seen)]
+
+
 def _fetch_index_full(code: str) -> Optional[List[Dict]]:
     """全量回补。三条通路, 由 idx_registry 的 src 决定(别按代码号猜):
       · src='ths'     → 同花顺网页接口(48_ 前缀)。**同花顺全A 883957 只有这一条**, 腾讯/新浪/东财全空。
@@ -147,6 +186,12 @@ def _fetch_index_full(code: str) -> Optional[List[Dict]]:
         return _ths_i.full_bars(code) or None
     if code in INDEX_DAILY_SINA:
         return fetch_sina_daily(code, 1500)
+    # v2.366: 原来只取 count='2000'(腾讯单次上限) 就直接返回 —— 沪深300/中证红利/
+    #   中证1000 这类能回溯到 2004~2005 的指数永远只有 2000 根, 而且一旦被当成
+    #   "全量"去覆盖本地更长的库, 就把它截短(2026-11-21 事故)。改成用 end= 往前翻页。
+    rows = _fetch_index_paged(code)
+    if rows:
+        return rows
     return _norm_tencent_bars(_fqkline_req(code, count='2000'), code) or None
 
 
@@ -355,6 +400,15 @@ def ensure_index_daily(code: str, need: int = 0) -> bool:
         rows = _drop_forming_today(rows)
         if not rows:
             return False
+        # v2.366 (事故修复): **新数据比本地短就拒绝覆盖**。
+        #   背景: 2026-11-21 一次 /api/kline?code=sh000922&limit=6000 触发 need=6000,
+        #   本地 5314 < 6000 ⇒ 走进这里全量重建, 而 _fetch_index_full 对 tencent
+        #   只给 2000 根(单次硬上限) ⇒ 5314 行被 2000 行覆盖, 长历史当场丢一半。
+        #   各源深度不同(腾讯 2000/新浪 1500/同花顺全史), 短源永远不该覆盖长库。
+        if cur is not None and len(rows) < len(cur):
+            print('[idx_ensure] %s 拉回 %d 根 < 本地 %d 根, 拒绝覆盖(保长库)'
+                  % (code, len(rows), len(cur)), file=sys.stderr)
+            return True          # 本地仍在, 视为就绪 —— 别让调用方以为失败去重试
         ok = write_index_daily(code, rows)
         if not ok:
             return False
@@ -411,7 +465,11 @@ def get_index_bars(code: str, need: Optional[int] = None,
     本地优先 → 缺失/不足 need 自动全量回补 → 盘中 with_live 当日live bar内存替换 (绝不写盘)"""
     full = read_index_daily(code)
     if full is None or (need and len(full) < need):
-        if not ensure_index_daily(code, need or 0):
+        # v2.366: need 可能是调用方随手传的大数(如 limit=6000)，直接拿去 ensure
+        #   会触发「全量重建」—— 而重建只受 _fetch_index_full 的源深度限制。
+        #   ensure 内部已有「不缩水」保护，这里再夹一层，避免无谓的重建请求。
+        _need = min(int(need or 0), 6000)
+        if not ensure_index_daily(code, _need):
             full = read_index_daily(code)
         else:
             full = read_index_daily(code)
