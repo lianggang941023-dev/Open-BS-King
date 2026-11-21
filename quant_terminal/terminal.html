@@ -2826,7 +2826,11 @@ function renderIndices(indices, regimes){
     var k=order[i]; var v=indices[k]; if(!v)continue;
     var r=regimes?regimes[k]:null;
     if(!r||r.regime!=='上升趋势')allUp=false;
-    items.push({k:k,v:v,r:r,slot:(INDEX_SLOTS[k]?k:(i<INDEX_TOP7.length?INDEX_TOP7[i]:k))});
+    /* v2.362 (用户 m39159): slot 必须按**位置**取 INDEX_TOP7[i], 不能按 code 反查!
+       原来写的是 (INDEX_SLOTS[k] ? k : INDEX_TOP7[i]) —— 只要某一格被换过,
+       k 就不再等于 INDEX_TOP7[i], 而 INDEX_SLOTS[k] 又是空 ⇒ 整体**错位一格**
+       (右键第 7 格改的是第 6 格)。order[i] 本来就是 slotCodeOf(INDEX_TOP7[i]), 位置一一对应。 */
+    items.push({k:k,v:v,r:r,slot:(i<INDEX_TOP7.length?INDEX_TOP7[i]:k)});
   }
   allUp=allUp&&items.length>0;
   var h='';
@@ -2838,7 +2842,9 @@ function renderIndices(indices, regimes){
     // v2.4 (2026-08-07): 点击指数 → 查看该指数日K/分时
     // v2.70 (2026-09-12): 取消原生 title 停留提示("点击查看 X 日K/分时"), 改悬停浮窗 = 前5交易日
     var _slot=it.slot||'';
-    var _ctx=_slot?(' oncontextmenu="return idxMenuOpen(event,\''+_slot+'\')"'):'';
+    /* v2.362 (用户 m39159): 只有「沪深300」「中证500」两格可换 —— 前五格是最常用指数, 不给右键 */
+    var _ctx=((_slot==='sh000300'||_slot==='sz399905')
+              ?(' oncontextmenu="return idxMenuOpen(event,\''+_slot+'\')"'):'');
     h+='<span class="idx" data-slot="'+(_slot||'')+'" style="cursor:pointer"'+_ctx+' onmouseenter="showIdxTip(event,\''+k+'\');miniIdx(event,\''+k+'\')" onmousemove="showIdxTip(event,\''+k+'\')" onmouseleave="hideTvTip();miniHide()" onclick="openIndexKline(\''+k+'\')">';
     h+='<span class="name'+nmCls+'">'+n+'</span>&nbsp;';
     // v2.104 (2026-09-19): 名称↔点数之间补 1 个等宽空格(&nbsp;) —— 这两个 span 原来紧贴,
@@ -17357,21 +17363,46 @@ function idxMenuClose(){
 function _idxMenuEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
 function idxMenuOpen(e, slot){
   var m=idxMenuEl(); if(!m) return true;
+  /* v2.362b (用户 m39159): 右键时鼠标就在格子上, 悬停浮窗必已弹出并把菜单盖住 ——
+     先把两个浮窗收起来, 菜单才看得见。onmouseenter 不会重弹 (鼠标没离开), 所以这一行就够了。 */
+  try{ if(typeof hideTvTip==='function') hideTvTip(); }catch(_e1){}
+  try{ if(typeof miniHide==='function') miniHide(); }catch(_e2){}
   var cand=(INDEX_SLOTS&&INDEX_SLOTS[slot])||[];
   if(!cand.length){
     /* 候选表还没拉到(极早期/接口失败) → 至少给本格默认值, 不能什么都弹不出来 */
     cand=[{code:slot,name:(IDX_NAMES[slot]||slot),short:(IDX_NAMES[slot]||slot)}];
   }
   var cur=slotCodeOf(slot), h='', i, c, on;
+  /* v2.362 (用户 m39159): 菜单本身就是「一眼看全」——每项直接给
+     名称 / 现价 / 涨跌幅 / 趋势词 四段, 不用先选中才在外层看到。
+     数据取自 renderIndices 每轮缓存的 window._lastSentiment, 不再额外请求。 */
+  var _ls=window._lastSentiment||{}, _ix=_ls.indices||{}, _rg=_ls.index_regimes||{};
+  function _miCell(code){
+    var v=_ix[code], r=_rg[code], s='';
+    var pct=(v&&v.price!=null)?v.change_pct:null;
+    var pc=(pct>0?'var(--up)':(pct<0?'var(--dn)':'var(--tx2)'));
+    s+='<span style="display:inline-block;min-width:74px;text-align:right;'
+      +(v&&v.price!=null?'color:var(--tx0)':'color:var(--tx3)')+';font-variant-numeric:tabular-nums">'
+      +((v&&v.price!=null)?(+v.price).toFixed(2):'--')+'</span>';
+    s+='<span style="display:inline-block;min-width:58px;text-align:right;color:'+pc
+      +';font-variant-numeric:tabular-nums">'
+      +((pct==null)?'--':((pct>0?'+':'')+(+pct).toFixed(2)+'%'))+'</span>';
+    s+='<span style="display:inline-block;min-width:66px;text-align:right;color:'
+      +(r?(IDX_REGIME_COLORS[r.regime]||'var(--tx2)'):'var(--tx2)')+'">'
+      +_idxMenuEsc(r?(r.regime||'--'):'--')+'</span>';
+    return s;
+  }
   for(i=0;i<cand.length;i++){
     c=cand[i]; on=(c.code===cur);
     h+='<div class="idx-mi" data-code="'+_idxMenuEsc(c.code)+'" style="padding:4px 12px;cursor:pointer;'
-      +(on?'color:var(--gold);background:rgba(240,192,64,0.10)':'color:var(--tx0)')
-      +';white-space:nowrap">'+(on?'● ':'　')+_idxMenuEsc(c.short||c.name||c.code)+'</div>';
+      +(on?'background:rgba(240,192,64,0.10)':'')
+      +';white-space:nowrap;display:flex;align-items:center;gap:0">'
+      +'<span style="display:inline-block;min-width:96px;'
+      +(on?'color:var(--gold);font-weight:600':'color:var(--tx0)')+'">'
+      +(on?'● ':'　')+_idxMenuEsc(c.short||c.name||c.code)+'</span>'
+      +_miCell(c.code)+'</div>';
   }
-  m.innerHTML='<div id="idx-menu-title" style="padding:3px 10px 4px;color:var(--tx3);font-size:9px;'
-    +'border-bottom:1px solid var(--bd);margin-bottom:2px;white-space:nowrap">替换「'
-    +_idxMenuEsc(IDX_NAMES[slot]||slot)+'」这一格</div>'+h;
+  m.innerHTML=h;   /* v2.362: 去掉顶部那行说明标题（用户要求） */
   m.style.display='block'; m.style.left='0px'; m.style.top='0px';
   var w=m.offsetWidth||120, ht=m.offsetHeight||120;
   var x=e.clientX+2, y=e.clientY+2;
@@ -19641,8 +19672,9 @@ html[data-theme="light"] .lhb2-cpt>span{background:rgba(15,23,42,.05);color:var(
 <!-- v2.360d (用户 m38439/m38512): 顶栏指数栏右键菜单 —— 只给「沪深300」「中证500」两格用,
      原位替换成候选指数(候选里含本格默认值, 所以能随时切回)。菜单挂在 body 下, position:fixed,
      z-index 要高过所有窗口(10050 = 居中 K 线窗那层)。 -->
-<div id="idx-menu" style="position:fixed;display:none;z-index:10120;background:var(--win-glass);border:1px solid var(--bd2);border-radius:3px;box-shadow:0 6px 20px rgba(0,0,0,.55);padding:3px 0;min-width:118px;font-size:11px">
-  <div id="idx-menu-title" style="padding:3px 10px 4px;color:var(--tx3);font-size:9px;border-bottom:1px solid var(--bd);margin-bottom:2px;white-space:nowrap">替换这一格</div>
+<div id="idx-menu" style="position:fixed;display:none;z-index:10120;background:var(--win-glass);border:1px solid var(--bd2);border-radius:3px;box-shadow:0 6px 20px rgba(0,0,0,.55);padding:3px 0;min-width:300px;font-size:11px">
+  <!-- v2.362 (用户 m39159): 标题行已删（用户要求去掉那句说明）;
+       每项内容由 idxMenuOpen() 现拼, 含 名称/现价/涨跌幅/趋势 四段 -->
 </div>
 <!-- v2.309 (2026-11-14 用户 m17854): 股票行右键菜单 —— 原「操作」列的「买」按钮改成这里。
      菜单贴在鼠标右键点的右下方; 点菜单外任何位置(左键/右键)都关掉。 -->
