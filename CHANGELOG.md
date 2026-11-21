@@ -42,6 +42,30 @@
 
 - `version._VER_MARK` 会把源码注释里的 `v2.367d:` 之类当成版本号 ⇒ 发版时 `VERSION` 必须跟到代码里的最大标记 **v2.367f**。
 
+## v2.368 — 2026-11-22
+
+**特色指标 / 指数一览「先读存档秒显，再拉最新」**
+
+用户反馈：首次打开「特色指标 → 沪深300头部/全流通市值」等了很多秒。查下来**存档一直都在**
+（`data_archive/window/idx_head.json` 63 KB，`GET /api/snapshot?name=idx_head` 只要 40 ms），
+但前端 `idxPairEnter()` / `idxListEnter()` **从来没有读存档这条路**，一律直打 `/api/idx_head`
+（冷启实测 27.2 秒）与 `/api/idx_list`（冷 1.9 秒）—— 冷启时预热线程正在算同一条序列，两边抢网络。
+
+改法照抄已经用了两轮的范式（v2.323 五窗落盘、v2.325 三趋势线）：**先 `/api/snapshot` 立刻画，
+再拉真数据覆盖**。
+
+- 新增 `idxPairArchiveFirst()`：按 `idxpSt.cur === IDXP_HEAD_LBL` 选 `idx_head` / `idx_pair` 两份存档
+- 新增 `idxListArchiveFirst()`：`idxlSt.rows = payload.rows` + 恢复 `idxlSaved()` 选中 + `idxlPaintList()`
+- `idxPairEnter()` / `idxListEnter()` 各插一步「读存档」
+- `idxPairLoadHead()` / `idxPairLoad()` / `idxListLoad()` 的「加载中…」加 `if(!c1)` / `if(!rows.length)`
+  守卫 —— 否则会把更具体的「存档 02:13 · 正在拉最新…」提示盖掉
+
+**验收**：用 `page.route` 把两个计算接口各拦 8 秒模拟冷算 —— 特色指标首帧 **103~112 ms**、
+指数一览 **35 ms**（17 行），画上屏时提示已是「存档…· 正在拉最新…」，真数据回来自动收掉；
+控制台 0 error / 0 warning。
+
+---
+
 ## v2.367 — 2026-11-22
 
 ### 新增：5 只沪深300ETF 进「指数一览」+ 特色指标「沪深300头部/全流通市值」

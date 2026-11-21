@@ -20347,7 +20347,8 @@ function idxpDrawHead(d){
 }
 
 async function idxPairLoadHead(){
-  idxpMsg('加载中…');
+  /* v2.368: 存档已经画上去时不要用笼统的「加载中…」盖掉「存档 01:41 · 正在拉最新…」 */
+  if(!idxpSt.c1) idxpMsg('加载中…');
   var d = await api('/api/idx_head');
   if(d && d._err){ idxpMsg('取数失败: ' + d._err, 'err'); return; }
   if(!d || !d.ok){ idxpMsg((d && d.error) || '取数失败', 'err'); return; }
@@ -20373,7 +20374,7 @@ async function idxPairLoad(label){
     var p = null, ps = idxpSt.pairs || [];
     for(var i = 0; i < ps.length; i++){ if(ps[i].label === label){ p = ps[i]; break; } }
     if(!p){ idxpMsg('没有这一组', 'err'); return; }
-    idxpMsg('加载中…');
+    if(!idxpSt.c1) idxpMsg('加载中…');   /* v2.368: 同上, 别盖掉存档提示 */
     var d = await api('/api/idx_pairs?a=' + encodeURIComponent(p.a) + '&b=' + encodeURIComponent(p.b));
     if(d && d._err){ idxpMsg('取数失败: ' + d._err, 'err'); return; }
     if(!d || !d.ok){ idxpMsg('取数失败', 'err'); return; }
@@ -20410,15 +20411,54 @@ async function idxPairLoadMeta(){
   return saved;
 }
 
+/* v2.368 (用户 m40786「如果本地有存档应该秒加载呀」): 特色指标先读存档秒显。
+   存档一直都有(data_archive/window/idx_head.json / idx_pair.json, /api/snapshot
+   只要 40ms), 但这里原来一次都没读过 —— 直接打 /api/idx_head, 冷启要现算十几秒。
+   现在与「市场总览/连板梯队/龙虎榜/行业板块」同一套范式: 先画存档, 再拉真数据覆盖。 */
+async function idxPairArchiveFirst(){
+  var nm = (idxpSt.cur === IDXP_HEAD_LBL) ? 'idx_head' : 'idx_pair';
+  try{
+    var s = await api('/api/snapshot?name=' + encodeURIComponent(nm));
+    if(!s || !s.ok || !s.payload) return false;
+    var p = s.payload;
+    if(!p.ok) return false;
+    var stamp = String(s.saved_at || '').slice(5, 16);
+    if(nm === 'idx_head'){
+      if(!(p.dates && p.dates.length)) return false;
+      var t1 = $('idxp-title'), t2 = $('idxp-sub');
+      if(t1) t1.textContent = IDXP_HEAD_LBL;
+      if(t2){
+        t2.textContent = p.n + ' 个交易日 · ' + p.start + ' ~ ' + p.end
+                       + (p.n_snap ? (' · 其中 ' + p.n_snap + ' 天为收盘真值快照') : '');
+      }
+      idxpSt.headStart = p.start || '';
+      idxpPaintList();
+      idxpDrawHead(p);
+    }else{
+      if(!p.a || !p.b || !((p.a.dates || []).length)) return false;
+      var q1 = $('idxp-title'), q2 = $('idxp-sub');
+      if(q1) q1.textContent = idxpSt.cur || ((p.a.name || '') + '/' + (p.b.name || ''));
+      if(q2) q2.textContent = p.n + ' 个交易日 · ' + p.start + ' ~ ' + p.end;
+      idxpPaintList();
+      idxpDraw(p);
+    }
+    idxpMsg('存档 ' + stamp + ' · 正在拉最新…');
+    return true;
+  }catch(e){ return false; }
+}
+
 async function idxPairEnter(){
   /* v2.359: 与「市场总览/大盘云图」同一套范式 —— 先把标签和左列画出来(快),
-     再去拉当前这组的数据。若已有已渲染的图, 直接复用不重画。 */
+     再去拉当前这组的数据。若已有已渲染的图, 直接复用不重画。
+     v2.368: 中间再插一步「读存档秒显」, 冷启不用干等十几秒。 */
   if(!idxpSt.pairs.length){
     var k = await idxPairLoadMeta();
+    if(!idxpSt.c1){ await idxPairArchiveFirst(); }
     if(k === IDXP_HEAD_LBL) idxPairLoadHead();
     else if(k) idxPairLoad(k);
   }else if(!idxpSt.c1){
     idxpPaintList();
+    await idxPairArchiveFirst();
     if(idxpSt.cur === IDXP_HEAD_LBL) idxPairLoadHead();
     else if(idxpSt.cur) idxPairLoad(idxpSt.cur);
   }else{
@@ -20741,7 +20781,7 @@ async function idxListLoad(){
   if(idxlSt.loading) return;
   idxlSt.loading = true;
   try{
-    idxlMsg('加载中…');
+    if(!idxlSt.rows.length) idxlMsg('加载中…');   /* v2.368: 别盖掉存档提示 */
     var d = await api('/api/idx_list?limit=2');
     if(d && d._err){ idxlMsg('取数失败: ' + d._err, 'err'); return; }
     if(!d || !d.ok){ idxlMsg('取数失败', 'err'); return; }
@@ -20764,9 +20804,32 @@ async function idxListLoad(){
   }
 }
 
+/* v2.368: 指数一览同样先读存档秒显 —— 17 只的名称/现价/涨跌幅/趋势词全在
+   idx_list.json 里(4.5KB), 而 /api/idx_list 冷启要读 17 个 CSV(实测 1.9 秒), 预热
+   没跑完时更慢。存档先画出来, 真数据回来再覆盖。 */
+async function idxListArchiveFirst(){
+  try{
+    var s = await api('/api/snapshot?name=idx_list');
+    if(!s || !s.ok || !s.payload) return false;
+    var rows = s.payload.rows || [];
+    if(!rows.length) return false;
+    idxlSt.rows = rows;
+    var want = idxlSaved(), has = false, i;
+    for(i = 0; i < rows.length; i++){ if(rows[i].code === want){ has = true; break; } }
+    if(!has) want = rows[0].code;
+    idxlSt.cur = want;
+    idxlPaintList();
+    idxlMsg('存档 ' + String(s.saved_at || '').slice(5, 16) + ' · 正在拉最新…');
+    return true;
+  }catch(e){ return false; }
+}
+
 async function idxListEnter(){
-  if(!idxlSt.rows.length) await idxListLoad();
-  else { idxlPaintList(); idxlDrawK(); idxlDrawM(); }
+  if(!idxlSt.rows.length){
+    var hit = await idxListArchiveFirst();
+    if(!hit){ await idxListLoad(); return; }
+    idxListLoad();                     /* 存档已上屏, 真数据后台覆盖 */
+  }else { idxlPaintList(); idxlDrawK(); idxlDrawM(); }
 }
 function idxListReload(){
   idxlSt.rows = [];
