@@ -9607,7 +9607,7 @@ if __name__ == '__main__':
         except Exception as _e:
             _swlog('idx_head_snapshot', _e)
             _sn = 'snap-fail'
-        # v2.367k: 顺手把「头部占比」日线也算一遍塞进缓存 —— 这条序列冷算 4.7 秒,
+        # v2.367: 顺手把「头部占比」日线也算一遍塞进缓存 —— 这条序列冷算 4.7 秒,
         #   每天只变一次(收盘快照更新), 不预热的话第一次点开就是 4 秒多。
         #   **必须放在 snapshot_today 之后** —— 快照写盘会改 ratio json 的 mtime,
         #   先算后写等于白算。
