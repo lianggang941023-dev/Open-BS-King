@@ -17,6 +17,37 @@
 
 ---
 
+---
+
+## v2.367 — 2026-11-22
+
+### 新增：5 只沪深300ETF 进「指数一览」+ 特色指标「沪深300头部/全流通市值」
+
+- **`quant_terminal/etf_src.py`（新建）** —— 5 只沪深300ETF 的取数与指标，走东财通道：
+  - `ETFS` = 510300/510310/510330/159919/515330，前端短名 `300华泰/300易方/300华夏/300嘉实/300天弘`
+  - 日K `push2his.eastmoney.com/api/qt/stock/kline/get?secid=…&beg=20200102`，**历史从 2020-01-02 起**，5 只各 1668 根，本地存档 + 每日增量
+  - 规模/份额：季报 `fundf10.eastmoney.com/FundArchivesDatas.aspx?type=gmbd`（必带 Referer）+ 实时 `push2.eastmoney.com/api/qt/stock/get` 的 `f84`/`f117`
+  - 指标 = 5 只 ETF 规模合计 ÷ 沪深300 流通市值（`secid=1.000300` 的 `f117`），末值 **4763.84 亿 / 0.9876%**
+- **接入**：`idx_registry.ALL` +5 条（`src:'em'`）与 `ETF_CODES`；`engine` 三处的 `src_of=='em'` 分流；`idx_store.ensure/sync/deepen` 同样分流；`server` 新增 `/api/idx_head`，预热里跑 `snapshot_today()` 与 `head_ratio_series()`
+- **前端**：「指数一览」左列 17 只（末 5 只 ETF 带 点数/涨跌幅/趋势词）；「特色指标」第 4 项双图（上=头部规模亿元青绿单线、下=占比 % 金线带淡金面积）
+
+### 修掉六个静默错误
+
+1. `_secid('510300')` 返回 `''` —— 只认带前缀写法 ⇒ 补 `norm_code()` 同时认 `510300`/`sh510300`/`1.510300`
+2. `fcap=0` 时 ratio 归零 ⇒ 加 `_K_LIVE` 实时兜底
+3. **`gmbd` 数字带千位逗号**（`'1,068.79'`）⇒ `float()` 抛 `ValueError` 被 skip，**上亿的季全丢**（指标算出 0.4051% 而真值 0.9876%）
+4. **份额不能只做前向填充** —— 510300 季报 2026-09-30 = 241.20 亿份，实时 `f84` = 515.41 亿份，一个半月真的翻倍；改「季报点 + 每日真值快照点拼时间轴 → 线性插值」，否则 2026-10~11 段差 2.2 倍
+5. 快照 `share` 单位差 **1e8**（`f84` 是「份」、`gmbd` 是「亿份」）⇒ 曾算出 `ratio = 95,032,774%`
+6. 快照日期必须取**最后一根日K的日期**（众数）—— 按 `today` 记会把周五收盘记成周六，时间轴多假点、周五永远缺真值
+7. `ETFS` 里 code 是六位而本地库文件名是 `sh510300.csv` ⇒ 读库一律过 `norm_code()`（否则 `read_index_daily` 恒 0 根）
+
+### 性能
+
+- `head_ratio_series` 原每次 4.7 秒（`gmbd×5` 0.74 + `snap×5` 0.60 + `_interp` 里 1668×5 次 `strptime` 0.4）
+- `_interp` 加**序数快路径**（`isinstance(x,int)` 直接用）+ `_HEAD_CACHE`（key = 日K/沪深300/ratio json 的 `mtime:size`，TTL 600s）
+- 冷 4.67s / **热 0ms**；`/api/idx_head` 3.6~4.6s → **110~360ms**
+- ⚠ **预热必须排在 `snapshot_today()` 之后** —— 快照写盘会改 ratio json 的 mtime，先算等于白算
+
 ## v2.366 — 2026-11-21
 
 ### 修「长历史被短源覆盖」+ 指数一览取全量历史

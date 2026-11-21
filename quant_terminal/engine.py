@@ -184,6 +184,13 @@ def _fetch_index_full(code: str) -> Optional[List[Dict]]:
     if _idxr.src_of(code) == 'ths':
         from quant_terminal import ths_index as _ths_i
         return _ths_i.full_bars(code) or None
+    # v2.367 (用户 m40047): 5 只沪深300ETF 走东财。ETF 不是指数，腾讯/新浪/同花顺的
+    #   指数接口一律取不到（自己拼 fqkline 只能拿到 640 根且字段要另解）⇒ 单独一条通路。
+    #   etf_src.full_bars 内部已带 beg=20200102（用户要求「历史上限截断成 2020 年第一个
+    #   交易日至今即可」），所以这里不用再裁。
+    if _idxr.src_of(code) == 'em':
+        from quant_terminal import etf_src as _etf
+        return _etf.full_bars(code) or None
     if code in INDEX_DAILY_SINA:
         return fetch_sina_daily(code, 1500)
     # v2.366: 原来只取 count='2000'(腾讯单次上限) 就直接返回 —— 沪深300/中证红利/
@@ -201,6 +208,9 @@ def _fetch_index_tail(code: str, n: int = 10) -> Optional[List[Dict]]:
     if _idxr.src_of(code) == 'ths':
         from quant_terminal import ths_index as _ths_i
         return _ths_i.tail_bars(code, n) or None
+    if _idxr.src_of(code) == 'em':          # v2.367: ETF 走东财
+        from quant_terminal import etf_src as _etf
+        return _etf.tail_bars(code, n) or None
     if code in INDEX_DAILY_SINA:
         return fetch_sina_daily(code, n)
     return _norm_tencent_bars(_fqkline_req(code, count=str(n)), code) or None
@@ -366,6 +376,11 @@ def _live_index_bar(code: str) -> Optional[Dict]:
     if _idxr.src_of(code) == 'ths':
         from quant_terminal import ths_index as _ths_i
         return _ths_i.live_bar(code)
+    # v2.367: ETF 盘中 live bar 走东财 stock/get 的 f43/f44/f45/f46（etf_src.live_bar
+    #   内部有三层兜底：实时快照 → 日K末根 → None，绝不返回四价全 0 的假 bar）
+    if _idxr.src_of(code) == 'em':
+        from quant_terminal import etf_src as _etf
+        return _etf.live_bar(code)
     today = datetime.now().strftime('%Y-%m-%d')
     try:
         j = _fqkline_req(code, count='5')

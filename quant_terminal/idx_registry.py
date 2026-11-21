@@ -25,6 +25,9 @@ server.INDEX_CODES、server.INDEX_NAMES、terminal.html 的 IDX_NAMES / idxNames
 - 'tencent'：腾讯 fqkline。7 大 + 上证50/中证1000/中证全指/中证红利 都走这条。
 - 'ths'    ：同花顺网页自编指数（48_ 前缀）。**只有同花顺全A 883957** ——
              腾讯/新浪/东财都没有它，fuyao 只有实时快照没有历史。
+- 'em'     ：东财（v2.367 起）。**只给 5 只沪深300ETF 用** —— ETF 不是指数，
+             腾讯/同花顺的指数接口一律取不到，只有东财 stock/kline + stock/get 有。
+             实际取数在 etf_src.py（那边也是『全仓唯一一份』：代码/短名/东财 secid）。
 """
 
 # 单一登记表：code -> {'name': 顶栏全名, 'short': 短名, 'src': 取数通路}
@@ -46,8 +49,23 @@ ALL = {
     'sh000016': {'name': '上证50', 'short': '上证50', 'src': 'tencent'},
 
     # ── 特色指标的分母。不在顶栏，但要和别的一样被刷新/存档 ───────────────
+    # ── 特色指标的分母。不在顶栏，但要和别的一样被刷新/存档 ───────────────
     'sh000922': {'name': '中证红利', 'short': '中证红利', 'src': 'tencent'},
+
+    # ── v2.367 (用户 m40047)：5 只沪深300ETF，进「指数一览」+ 做特色指标分子的成分 ──
+    #   为什么 src 单独开一条 'em'：ETF 不是指数，腾讯/同花顺的指数接口都取不到，
+    #   只有东财 stock/kline + stock/get 能拿到（见 etf_src.py 的模块说明）。
+    #   **名称必须用去重后的短名** —— 用户原话「ETF 的名称比较长，需要简化一下前端显示
+    #   就叫300华泰，300易方，300华夏，300嘉实，300天弘」。
+    'sh510300': {'name': '沪深300ETF华泰柏瑞', 'short': '300华泰', 'src': 'em'},
+    'sh510310': {'name': '沪深300ETF易方达', 'short': '300易方', 'src': 'em'},
+    'sh510330': {'name': '沪深300ETF华夏', 'short': '300华夏', 'src': 'em'},
+    'sz159919': {'name': '沪深300ETF嘉实', 'short': '300嘉实', 'src': 'em'},
+    'sh515330': {'name': '沪深300ETF天弘', 'short': '300天弘', 'src': 'em'},
 }
+
+# v2.367: ETF 子集（顺序 = 特色指标分子的固定顺序，别随手调）
+ETF_CODES = ('sh510300', 'sh510310', 'sh510330', 'sz159919', 'sh515330')
 
 # 顶栏七格的固定顺序（用户 m2xx 定的七格，不许随登记表顺序变）
 TOP7 = ('sh000001', 'sz399001', 'sz399006', 'sh000680', 'sh000688',
@@ -67,7 +85,9 @@ BAR_CODES = tuple(ALL.keys())
 # 「指数一览」页的 12 只（用户 m39345：七大 + 可替换候选全都要 + 中证红利）
 #   ⚠ 顺序 = 页面左列从上到下的顺序，别随手调。七大在前是因为最常用。
 LIST_CODES = (TOP7
-              + ('883957', 'sh000852', 'sh000985', 'sh000016', 'sh000922'))
+              + ('883957', 'sh000852', 'sh000985', 'sh000016', 'sh000922')
+              # v2.367 (用户 m40047)：5 只沪深300ETF 接在最后 —— 顺序 = 页面左列从上到下
+              + ETF_CODES)
 
 
 def name_of(code):
@@ -124,7 +144,7 @@ def selftest():
             if c not in ALL:
                 print('!! 槽 %s 的候选 %s 不在登记表' % (slot, c)); ok = False
     for c, it in ALL.items():
-        if it['src'] not in ('tencent', 'ths'):
+        if it['src'] not in ('tencent', 'ths', 'em'):
             print('!! %s 的 src=%r 不认识' % (c, it['src'])); ok = False
     print('登记表 %d 只 / 顶栏 %d 格 / 可换 %d 格'
           % (len(ALL), len(TOP7), len(SLOTS)))

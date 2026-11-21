@@ -52,11 +52,25 @@ for _c, _nm in (('883957', '同花顺全A'), ('sh000852', '中证1000'),
                 ('sh000985', '中证全指'), ('sh000016', '上证50')):
     IDX_INFO.setdefault(_c, (_nm, _nm))
 
+# v2.367 (用户 m40047): 5 只沪深300ETF 进「指数一览」。
+#   **短名用用户指定的**（原话「ETF 的名称比较长，需要简化一下前端显示就叫
+#   300华泰，300易方，300华夏，300嘉实，300天弘」），全名只给 tooltip 用。
+#   src='em' ⇒ 取数/建库走 engine 的东财分支（见下面的 ensure/sync 分流）。
+ETF_CODES = ('sh510300', 'sh510310', 'sh510330', 'sz159919', 'sh515330')
+for _c, _nm, _sh in (('sh510300', '沪深300ETF华泰柏瑞', '300华泰'),
+                     ('sh510310', '沪深300ETF易方达', '300易方'),
+                     ('sh510330', '沪深300ETF华夏', '300华夏'),
+                     ('sz159919', '沪深300ETF嘉实', '300嘉实'),
+                     ('sh515330', '沪深300ETF天弘', '300天弘')):
+    IDX_INFO[_c] = (_nm, _sh)
+
 # 「指数一览」的 12 只（v2.363 用户 m39345：七大 + 可替换候选 + 中证红利）
 #   顺序 = 左列从上到下；与 idx_registry.LIST_CODES 保持一致。
 LIST_CODES = ('sh000001', 'sz399001', 'sz399006', 'sh000680', 'sh000688',
               'sh000300', 'sz399905',
-              '883957', 'sh000852', 'sh000985', 'sh000016', 'sh000922')
+              '883957', 'sh000852', 'sh000985', 'sh000016', 'sh000922',
+              # v2.367 (用户 m40047): 5 只沪深300ETF 接在最后
+              ) + ETF_CODES
 
 # 特色指标的三组比值 —— (分子, 分母, 显示名)
 PAIRS = (
@@ -75,6 +89,17 @@ _MTIME = {}        # code -> 落盘 mtime，用来判断内存缓存是否过期
 
 _FLOOR = '1990-01-01'
 _PAGE = '2000'
+
+
+def _is_em(code):
+    """是不是走东财通路的标的（v2.367: 目前就是 5 只沪深300ETF）。
+
+    判据用 idx_registry.src_of()，不在这里再抄一份代码表 —— 两份表迟早会不一致。
+    """
+    try:
+        return E._idxr.src_of((code or '').lower()) == 'em'
+    except Exception:
+        return False
 
 
 def name_of(code):
@@ -203,6 +228,15 @@ def ensure(code, min_rows=0, deep=True):
         local = load(code)
         if local and (min_rows <= 0 or len(local) >= min_rows):
             return len(local)
+        # v2.367: ETF 不能走腾讯翻页（腾讯对 ETF 单次只给 640 根且字段要另解），
+        #   交给 engine.ensure_index_daily —— 它内部按 idx_registry.src_of() 分派，
+        #   em 分支走 etf_src.full_bars（东财，自带 beg=20200102）。
+        if _is_em(code):
+            try:
+                E.ensure_index_daily(code)
+            except Exception:
+                pass
+            return len(load(code))
         rows = fetch_deep(code) if deep else _page(code, '')
         if not rows:
             return len(local)
@@ -228,6 +262,12 @@ def sync(code):
         local = load(code)
         if not local:
             return 'missing-rebuilt' if ensure(code) else 'fail'
+        # v2.367: ETF 增量走 engine.sync_index_daily（同样是按 src 分派到东财）
+        if _is_em(code):
+            try:
+                return E.sync_index_daily(code, force=True)
+            except Exception:
+                return 'fail'
         tail = _page(code, '')[-10:]
         if not tail:
             return 'fail'
@@ -320,6 +360,15 @@ def list_view(limit=260):
         pct = None
         if len(closes) >= 2 and closes[-2]:
             pct = round((closes[-1] - closes[-2]) / closes[-2] * 100.0, 2)
+        # v2.364 (用户 m39650): 左列要显示趋势判定词 —— 直接复用 engine._regime_from_rows(),
+        #   与顶栏 classify_index_regime() / 悬停浮窗 index_hist_recent() 是**同一份实现**
+        #   (v2.70 定的规矩: 判定式只许有一处)。行数 <30 时它返回 None ⇒ 该行没有趋势词,
+        #   前端必须容忍为空, 不能画成 undefined。
+        _rg = {}
+        try:
+            _rg = E._regime_from_rows(rows) or {}
+        except Exception:
+            _rg = {}
         out.append({
             'code': c, 'name': name_of(c), 'short': short_of(c),
             'n': len(rows),
@@ -327,6 +376,9 @@ def list_view(limit=260):
             'end': rows[-1]['date'] if rows else '',
             'last': closes[-1] if closes else None,
             'pct': pct,
+            'regime': _rg.get('regime') or '',
+            'icon': _rg.get('icon') or '',
+            'regime_adx': _rg.get('adx'),
             'dates': dates, 'closes': closes,
         })
     return out
@@ -348,6 +400,14 @@ def deepen(code, min_start='2015-01-01', pause=0.05):
         local = load(code)
         if local and local[0]['date'] <= (min_start or ''):
             return len(local)          # 已经够早，不联网
+        # v2.367: ETF 历史按用户要求**截断在 2020-01-02**，不再往前翻页。
+        if _is_em(code):
+            if not local:
+                try:
+                    E.ensure_index_daily(code)
+                except Exception:
+                    pass
+            return len(load(code))
         rows = fetch_deep(code, pause=pause)
         if not rows:
             return len(local)

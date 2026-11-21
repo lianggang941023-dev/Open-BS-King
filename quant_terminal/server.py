@@ -111,6 +111,7 @@ from quant_terminal import version as _ver
 #   数据全复用 board_rank._facts()/_maps() 的现成缓存, 不新增网络源。
 from quant_terminal import yuntu as _yt
 from quant_terminal import idx_store as _ids
+from quant_terminal import etf_src as _etf      # v2.367: 5 只沪深300ETF + 头部占比指标
 # v2.360 (2026-11-21 用户 m38439): 指数登记表 —— 全仓唯一一份。
 #   原先 INDEX_CODES / INDEX_NAMES 各写死七码, 用户要求「顶栏两格可右键换指数」后
 #   候选指数(同花顺全A/中证1000/中证全指/上证50)必须也能走指数通路, 否则点进去
@@ -6658,6 +6659,39 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                     _m['ok'] = True
                     self._json(_m)
 
+            elif path == '/api/idx_head':
+                """v2.367 (用户 m40047): 特色指标「沪深300头部/全流通市值」日线。
+
+                口径（用户原话）：「头部（就是这五只）沪深300ETF占沪深300ETF自由流通
+                市值的比例，简化为『沪深300头部/全流通市值』」
+                  · 分子 = 5 只沪深300ETF 的**规模**合计（东财 f117，取不到时用
+                    份额×当日收盘价，单位统一成亿元）
+                  · 分母 = 沪深300 **流通市值**（东财 f117，亿元）
+                粒度（我定的，理由见 etf_src 模块 docstring）：
+                  · 历史段 = 季报份额（gmbd，2012 起）配当日收盘价 → 逐日
+                  · 今天起每日收盘后由 snapshot_today() 记一条真值快照，越攒越准
+                  · 两者之间**线性插值**，不能只做前向填充（2026-09-30→11-21 份额翻倍，
+                    只前向填差 2.2 倍）
+                参数: limit=只留最后 N 个点
+                """
+                try:
+                    _lim = int(qs.get('limit', '0') or 0)
+                except (TypeError, ValueError):
+                    _lim = 0
+                try:
+                    _hd = _etf.head_ratio_series(limit=_lim)
+                except Exception as _e:
+                    _hd = None
+                    _swlog('idx_head', _e)
+                if not _hd:
+                    self._json({'ok': False, 'error': '指标暂不可用（取不到 ETF 或沪深300 数据）'})
+                    return
+                try:
+                    _arc.save_window('idx_head', _hd)
+                except Exception:
+                    pass
+                self._json(_hd)
+
             elif path == '/api/board_rank':
                 """v2.277 (2026-11-11 用户 m09653): 行业/概念「板块」排行 —— 从 TSP 移植。
 
@@ -9565,7 +9599,23 @@ if __name__ == '__main__':
         """v2.359: 宽基指数本地存档预热 —— 缺的补深、已全的秒回。"""
         _done = _ids.prewarm(log=lambda m: _swlog('idx_prewarm', m))
         _syn = _idx_auto_sync(blocking=True)      # v2.359c: 顺手把今天的增量补上
-        return '%d 只/%s' % (len(_done), _syn)
+        # v2.367: 收盘后记一条「头部占比」真值快照 —— 这是该指标越用越准的唯一来源
+        #   （东财只给当前时点的 ETF 规模，历史规模序列不存在）。盘中它自己会拒绝。
+        try:
+            _sn = _etf.snapshot_today()
+            _sn = 'snap-ok' if (_sn or {}).get('ok') else 'snap-skip'
+        except Exception as _e:
+            _swlog('idx_head_snapshot', _e)
+            _sn = 'snap-fail'
+        # v2.367k: 顺手把「头部占比」日线也算一遍塞进缓存 —— 这条序列冷算 4.7 秒,
+        #   每天只变一次(收盘快照更新), 不预热的话第一次点开就是 4 秒多。
+        #   **必须放在 snapshot_today 之后** —— 快照写盘会改 ratio json 的 mtime,
+        #   先算后写等于白算。
+        try:
+            _etf.head_ratio_series()
+        except Exception as _e2:
+            _swlog('idx_head_warm', _e2)
+        return '%d 只/%s/%s' % (len(_done), _syn, _sn)
 
     def _idx_auto_sync(blocking=False):
         """v2.359c (用户 m38119「后续增量写入补充到本地数据」): 指数存档后台增量补。
