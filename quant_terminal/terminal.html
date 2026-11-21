@@ -19282,13 +19282,14 @@ window.ldrLhbPick = ldrLhbPick; window.ldrLhbInst = ldrLhbInst; window.ldrLhbDep
       <div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">
         <span id="idxp-title" style="font-size:12px;font-weight:700;color:var(--gold)"></span>
         <span id="idxp-sub" style="font-size:10px;color:var(--tx2)"></span>
+        <span id="idxp-eb-tabs" style="display:none;align-items:center;gap:4px;margin-left:8px"></span>
         <span style="flex:1"></span>
         <span id="idxp-msg" style="font-size:10px;color:var(--tx2)"></span>
       </div>
-      <div style="flex:1 1 50%;min-height:0;position:relative">
+      <div id="idxp-wrap1" style="flex:1 1 50%;min-height:0;position:relative">
         <div id="idxp-chart1" style="position:absolute;left:0;top:0;right:0;bottom:0"></div>
       </div>
-      <div style="flex:1 1 50%;min-height:0;position:relative">
+      <div id="idxp-wrap2" style="flex:1 1 50%;min-height:0;position:relative">
         <div id="idxp-chart2" style="position:absolute;left:0;top:0;right:0;bottom:0"></div>
       </div>
     </div>
@@ -20067,6 +20068,61 @@ var IDX_HEAD = 0.96;          /* 指数线透明度: 比个股浅, 免得两条�
 var IDXP_HEAD_LBL = '沪深300头部/全流通市值';
 var idxpSt = {pairs: [], cur: '', c1: null, c2: null, bound: false, loading: false,
               headStart: ''};   /* v2.367: 第 4 项的起始日, 供左列小字用 */
+/* v2.369 (用户 m40973): 特色指标第 5 项 —— 股债利差(复刻 legulegu.com 同名指标)。
+   左列标签统一前缀 '股债利差·', 这样能被 idxpEbCodeOf() 一眼认出来, 也不会和
+   「创业板指/中证红利」这种比值对混在一起。 */
+var IDXP_EB_PRE = '股债利差·';
+var IDXP_EB = [
+  {code: '000300', name: '沪深300', note: '2005 起 · 三套公式'},
+  {code: '000016', name: '上证50',  note: '2013 起 · 仅市盈率'},
+  {code: '000905', name: '中证500', note: '2013 起 · 仅市盈率'}
+];
+/* 公式可用的口径(与后端 equity_bond.TARGETS 一致): 只有沪深300 有股息率两套 */
+var IDXP_EB_OK = {'000300': ['pe', 'dvttm', 'dv'], '000016': ['pe'], '000905': ['pe']};
+var IDXP_EB_FLBL = {'pe': '1/市盈率', 'dvttm': '等权股息率TTM', 'dv': '静态股息率'};
+var IDXP_EB_FLBL_S = {'pe': 'PE', 'dvttm': '股息TTM', 'dv': '静态股息'};
+var IDXP_EB_MLBL = {30: '2.5年', 36: '3年', 60: '5年'};
+var idxpEbSt = {code: '000300', formula: 'pe', ma: 30, ov: null, loading: false,
+               want: '', seq: 0};
+
+/* v2.369b: 切标的时把公式收敛到这一档支持的集合里。
+   不这么做的话: 沪深300 选了「等权股息率TTM」再切上证50, 前端仍拿 dvttm 去请求,
+   后端回 `{ok:false, error:'上证50 不支持 等权股息率TTM 公式'}`, 界面就卡在上一档的
+   图上 + 一行错误, 看起来像「切换没反应」。 */
+function idxpEbFitFormula(code){
+  var ok = IDXP_EB_OK[code] || ['pe'];
+  if(ok.indexOf(idxpEbSt.formula) < 0) idxpEbSt.formula = ok[0];
+}
+
+function idxpEbCodeOf(label){
+  label = String(label || '');
+  if(label.indexOf(IDXP_EB_PRE) !== 0) return '';
+  for(var i = 0; i < IDXP_EB.length; i++){ if(IDXP_EB_PRE + IDXP_EB[i].name === label) return IDXP_EB[i].code; }
+  return '';
+}
+function idxpEbLbl(code){
+  for(var i = 0; i < IDXP_EB.length; i++){ if(IDXP_EB[i].code === code) return IDXP_EB_PRE + IDXP_EB[i].name; }
+  return IDXP_EB_PRE + '沪深300';
+}
+
+/* v2.369: 一图 / 两图切换。股债利差只画一张(对齐乐咕那种大图),
+   比值对与头部占比仍是上下两张。折叠那张容器设 display:none, 否则 echarts
+   会在 0 尺寸的容器上 init, 控制台刷 "Can't get dom width or height"。 */
+function idxpSetTwoPane(two){
+  var w1 = $('idxp-wrap1'), w2 = $('idxp-wrap2');
+  if(w1 && w2){
+    if(two){
+      w2.style.display = '';
+      w2.style.flex = '1 1 50%';
+      w1.style.flex = '1 1 50%';
+    }else{
+      w2.style.display = 'none';
+      w1.style.flex = '1 1 100%';
+    }
+  }
+  try{ if(idxpSt.c1) idxpSt.c1.resize(); }catch(e){}
+  if(two){ try{ if(idxpSt.c2) idxpSt.c2.resize(); }catch(e){} }
+}
 var idxlSt = {rows: [], chart: null, range: 260, bound: false, loading: false};
 
 function idxpSaved(){
@@ -20084,6 +20140,7 @@ function idxpMsg(t, k){
 /* ── 左列选项 ─────────────────────────────────────────────── */
 function idxpPaintList(){
   var box = $('idxp-list'); if(!box) return;
+  try{ idxpEbPaintTabs(); }catch(e){}   /* v2.369: 左列重画时 tab 态跟着刷 */
   var ps = idxpSt.pairs || [];
   if(!ps.length){ box.innerHTML = '<div style="font-size:10px;color:var(--tx3)">加载中…</div>'; return; }
   var h = '';
@@ -20119,6 +20176,25 @@ function idxpPaintList(){
     +  IDXP_HEAD_LBL + '</div>';
   h += '<div style="font-size:9px;color:var(--tx3);padding:0 0 4px 9px;white-space:nowrap">'
     +  (idxpSt.headStart ? ('从 ' + idxpSt.headStart) : '点击加载') + '</div>';
+  /* v2.369: 第 5 段 —— 股债利差(三档标的)。结构与上面完全一致, 不另起一套风格。 */
+  h += '<div style="height:1px;background:var(--c-line,rgba(255,255,255,0.08));margin:5px 2px 4px"></div>';
+  h += '<div style="font-size:9px;color:var(--tx3);padding:0 0 3px 2px;letter-spacing:.5px">股债利差</div>';
+  for(var e = 0; e < IDXP_EB.length; e++){
+    var it = IDXP_EB[e], lbl = IDXP_EB_PRE + it.name;
+    var onE = (idxpSt.cur === lbl);
+    h += '<div onclick="idxPairPick(\'' + lbl + '\')" '
+      +  'style="padding:5px 7px;border-radius:3px;cursor:' + (onE ? 'default' : 'pointer') + ';'
+      +  'border-left:2px solid ' + (onE ? 'var(--gold)' : 'transparent') + ';'
+      +  'background:' + (onE ? 'rgba(240,192,64,0.12)' : 'transparent') + ';'
+      +  'color:' + (onE ? 'var(--gold)' : 'var(--tx1)') + ';font-size:11px;white-space:nowrap;'
+      +  'overflow:hidden;text-overflow:ellipsis" '
+      +  'title="' + lbl + ' —— 1/滚动市盈率TTM − 10年期国债收益率; 通道 = 2.5/3/5 个月滚动均线 ± 2 倍标准差"'
+      +  (onE ? '' : ' onmouseover="this.style.background=\'rgba(255,255,255,0.05)\'"'
+                + ' onmouseout="this.style.background=\'transparent\'"') + '>'
+      +  it.name + '</div>';
+    h += '<div style="font-size:9px;color:var(--tx3);padding:0 0 4px 9px;white-space:nowrap">'
+      +  it.note + '</div>';
+  }
   box.innerHTML = h;
 }
 
@@ -20131,6 +20207,7 @@ function idxpRatioFmt(v){
 function idxpDraw(d){
   var box1 = $('idxp-chart1'), box2 = $('idxp-chart2');
   if(!box1 || !box2 || !d || !d.ok || !d.a) return;
+  idxpSetTwoPane(true);          /* v2.369: 同上 */
   /* v2.359b: readTheme() 是**副作用函数**(往全局 TH 上写), **没有返回值** ——
      写成 `var TH2 = readTheme()` 拿到的是 undefined, 后面读 TH2.gold 直接抛异常,
      两张图都画不出来(界面只剩「渲染失败」)。必须先调一次再取全局 TH。
@@ -20249,6 +20326,7 @@ function idxpDraw(d){
 function idxpDrawHead(d){
   var box1 = $('idxp-chart1'), box2 = $('idxp-chart2');
   if(!box1 || !box2 || !d || !d.ok) return;
+  idxpSetTwoPane(true);          /* v2.369: 从股债利差(单图)切回来要恢复两图 */
   if(typeof readTheme === 'function'){ try{ readTheme(); }catch(e){} }
   var TH2 = (typeof TH === 'object' && TH) ? TH : {};
   var cGold = TH2.gold || '#f0c040';
@@ -20405,6 +20483,7 @@ async function idxPairLoadMeta(){
     if(idxpSt.pairs[i].label === saved){ has = true; break; }
   }
   if(saved === IDXP_HEAD_LBL) has = true;          /* v2.367: 第 4 项也能被记住 */
+  if(idxpEbCodeOf(saved)) has = true;             /* v2.369: 股债利差三项也能被记住 */
   if(!has && (idxpSt.pairs || []).length) saved = idxpSt.pairs[0].label;
   idxpSt.cur = saved;
   idxpPaintList();
@@ -20416,6 +20495,7 @@ async function idxPairLoadMeta(){
    只要 40ms), 但这里原来一次都没读过 —— 直接打 /api/idx_head, 冷启要现算十几秒。
    现在与「市场总览/连板梯队/龙虎榜/行业板块」同一套范式: 先画存档, 再拉真数据覆盖。 */
 async function idxPairArchiveFirst(){
+  if(idxpEbCodeOf(idxpSt.cur)) return await idxpEbArchiveFirst();   /* v2.369 */
   var nm = (idxpSt.cur === IDXP_HEAD_LBL) ? 'idx_head' : 'idx_pair';
   try{
     var s = await api('/api/snapshot?name=' + encodeURIComponent(nm));
@@ -20455,11 +20535,13 @@ async function idxPairEnter(){
     var k = await idxPairLoadMeta();
     if(!idxpSt.c1){ await idxPairArchiveFirst(); }
     if(k === IDXP_HEAD_LBL) idxPairLoadHead();
+    else if(idxpEbCodeOf(k)) idxPairLoadEb();
     else if(k) idxPairLoad(k);
   }else if(!idxpSt.c1){
     idxpPaintList();
     await idxPairArchiveFirst();
     if(idxpSt.cur === IDXP_HEAD_LBL) idxPairLoadHead();
+    else if(idxpEbCodeOf(idxpSt.cur)) idxPairLoadEb();
     else if(idxpSt.cur) idxPairLoad(idxpSt.cur);
   }else{
     idxpSt.c1.resize(); idxpSt.c2 && idxpSt.c2.resize();
@@ -20472,6 +20554,12 @@ function idxPairPick(label){
   idxpSave(label);
   idxpPaintList();
   if(label === IDXP_HEAD_LBL){ idxPairLoadHead(); return; }   /* v2.367: 第 4 项走自己的接口 */
+  if(idxpEbCodeOf(label)){
+    idxpEbFitFormula(idxpEbCodeOf(label));      /* v2.369b: 先收敛公式, 别发出不支持的请求 */
+    idxpEbPaintTabs();
+    idxPairLoadEb();
+    return;
+  }
   idxPairLoad(label);
 }
 
@@ -20481,7 +20569,296 @@ function idxPairReload(resize){
     if(k) return idxPairLoad(k);
   });
   if(idxpSt.cur === IDXP_HEAD_LBL) return idxPairLoadHead();   /* v2.367 */
+  if(idxpEbCodeOf(idxpSt.cur)) return idxPairLoadEb(true);     /* v2.369 */
   return idxPairLoad(idxpSt.cur);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   v2.369 (2026-11-22 用户 m40973): 特色指标第 5 项 ——「股债利差」
+
+   用户原话：「https://legulegu.com/stockdata/equity-bond-spread … 我想完美复刻这个
+   指标到『特色指标』」。截图形态：一张图五条线(利差蓝 / 指数红右轴 / 均线橙 /
+   上轨绿 / 下轨紫) + 公式 tab + 均线档 tab + 数据缩放条。
+
+   口径(逐条照乐咕, 已用 5248 个点逐位对拍通过, 见 equity_bond.py docstring)：
+     公式一 pe    : 1/指数加权滚动PE_TTM − 10年期国债收益率(%)/100   ⇒ 小数
+     公式二 dvttm : 10年期国债收益率 − 指数等权股息率TTM            ⇒ 百分点
+     公式三 dv    : 10年期国债收益率 − 指数静态股息率              ⇒ 百分点
+     通道 = **W 个月**(不是交易日数!)滚动均值 ± 2×总体标准差;
+
+   能力边界(后端已标注 src, 前端在副标题里显示, 不让用户猜)：
+     沪深300  ⇒ 乐咕自家 API, 2005-04-08 起, 三套公式全量
+     上证50 / 中证500 ⇒ 中证 index-perf 的 peg + 国债自算, 2013 起, 只有市盈率
+       (中证 peg 与乐咕口径差约 0.002, 那 0.002 是数据源差异, 不是 bug)
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+function idxpEbBtn(txt, on, dis, onclick, tip){
+  return '<span ' + (dis ? '' : ('onclick="' + onclick + '"'))
+    + ' title="' + (tip || '') + '"'
+    + ' style="font-size:9px;padding:1px 6px;border-radius:2px;white-space:nowrap;'
+    + 'border:1px solid ' + (on ? 'var(--gold)' : 'var(--c-line,rgba(255,255,255,0.10))') + ';'
+    + 'background:' + (on ? 'rgba(240,192,64,0.14)' : 'transparent') + ';'
+    + 'color:' + (on ? 'var(--gold)' : (dis ? 'var(--tx3)' : 'var(--tx2)')) + ';'
+    + 'cursor:' + (dis ? 'not-allowed' : 'pointer') + ';'
+    + 'opacity:' + (dis ? '0.45' : '1') + '">' + txt + '</span>';
+}
+
+/* 标题栏那排 tab: 只在「股债利差」被选中时显示 */
+function idxpEbPaintTabs(){
+  var box = $('idxp-eb-tabs'); if(!box) return;
+  var isEb = !!idxpEbCodeOf(idxpSt.cur);
+  if(!isEb){ box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = 'flex';
+  var ok = IDXP_EB_OK[idxpEbSt.code] || ['pe'];
+  var h = '';
+  var fk = ['pe', 'dvttm', 'dv'];
+  for(var i = 0; i < fk.length; i++){
+    var f = fk[i], can = (ok.indexOf(f) >= 0);
+    h += idxpEbBtn(IDXP_EB_FLBL_S[f], idxpEbSt.formula === f, false,
+                   can ? ("idxpEbFormula('" + f + "')") : ("idxpEbWhy('" + f + "')"),
+                   can ? ('公式 ' + IDXP_EB_FLBL[f]) : (IDXP_EB_FLBL[f] + ' —— 这一档没有可用历史数据'));
+  }
+  h += '<span style="width:1px;height:11px;background:var(--c-line,rgba(255,255,255,0.10));margin:0 2px"></span>';
+  var mk = [30, 36, 60];
+  for(var j = 0; j < mk.length; j++){
+    var m = mk[j];
+    h += idxpEbBtn(IDXP_EB_MLBL[m], idxpEbSt.ma === m, false,
+                   'idxpEbMa(' + m + ')', '通道窗口 ' + IDXP_EB_MLBL[m] + '(滚动 ' + m + ' 个月均值 ± 2 倍标准差)');
+  }
+  h += '<span style="width:1px;height:11px;background:var(--c-line,rgba(255,255,255,0.10));margin:0 2px"></span>';
+  h += idxpEbBtn('同步', false, false, 'idxpEbSync()', '重新拉乐咕/中证/东财三份源表(约 10~15 秒)');
+  box.innerHTML = h;
+}
+
+/* v2.369b: 禁用态原来是「没有 onclick」⇒ 点下去毫无反应, 看着像按钮坏了。
+   改成点了给一句为什么 + 指向能用的那一档。 */
+function idxpEbWhy(f){
+  var lbl = IDXP_EB_FLBL[f] || f;
+  var who = '';
+  for(var i = 0; i < IDXP_EB.length; i++){
+    if((IDXP_EB_OK[IDXP_EB[i].code] || []).indexOf(f) >= 0){ who = IDXP_EB[i].name; break; }
+  }
+  idxpMsg('「' + lbl + '」当前这一档没有历史数据' + (who ? ('，只有 ' + who + ' 有') : ''), 'err');
+}
+
+function idxpEbFormula(f){
+  if(f === idxpEbSt.formula) return;
+  idxpEbSt.formula = f;
+  idxpEbPaintTabs();
+  idxPairLoadEb(true);
+}
+function idxpEbMa(m){
+  m = +m || 30;
+  if(m === idxpEbSt.ma) return;
+  idxpEbSt.ma = m;
+  idxpEbPaintTabs();
+  idxPairLoadEb(true);
+}
+async function idxpEbSync(){
+  idxpMsg('正在同步源表(乐咕/中证/东财)…');
+  var _txt = '', _k = 'ok';
+  try{
+    var d = await api('/api/idx_eb?mode=sync');
+    if(d && d.ok && d.sync){
+      _txt = '同步完成 ' + ((d.sync.secs != null) ? (d.sync.secs + 's') : '');
+    }else{
+      _txt = '同步失败' + (d && d.error ? (': ' + d.error) : ''); _k = 'err';
+    }
+  }catch(e){ _txt = '同步失败: ' + (e && e.message); _k = 'err'; }
+  /* v2.369d: 顺序必须反 —— idxPairLoadEb 自己会写「计算中…」再清空, 先写结果必被覆盖。
+     先重画, 画完再把同步结果写上去。 */
+  await idxPairLoadEb(true);
+  idxpMsg(_txt, _k);
+}
+
+/* 画图: 一张大图, 五条线双轴 —— 与乐咕截图同形态 */
+function idxpDrawEb(d){
+  var box1 = $('idxp-chart1');
+  if(!box1 || !d || !d.ok || !(d.dates || []).length) return;
+  idxpSetTwoPane(false);
+  if(typeof readTheme === 'function'){ try{ readTheme(); }catch(e){} }
+  var TH2 = (typeof TH === 'object' && TH) ? TH : {};
+  var light = (typeof themeIsLight === 'function') ? themeIsLight() : false;
+  var cSpread = light ? '#1f6feb' : '#4f9dff';      /* 股债利差 蓝 */
+  var cIdx    = TH2.up   || '#f04050';              /* 指数 红 */
+  var cAvg    = TH2.gold || '#f0c040';              /* 均线 橙 */
+  var cUpB    = light ? '#0e8f6f' : '#2ee6a8';      /* 上轨 绿 */
+  var cLoB    = light ? '#7a4bd0' : '#b07cff';      /* 下轨 紫 */
+  var cTx2    = TH2.tx2 || '#8a8a9a';
+  var cSplit  = TH2.split || 'rgba(255,255,255,0.06)';
+
+  var dates  = d.dates || [];
+  var sp     = d.spread || [];
+  var cl     = d.close || [];
+  var av     = d.avg || [];
+  var up     = d.upper || [];
+  var lo     = d.lower || [];
+  var isPe   = (d.formula === 'pe');
+  var dec    = isPe ? 4 : 2;                        /* pe 是小数, 股息率是百分点 */
+  var uid    = 'eb' + (+new Date());
+
+  if(idxpSt.c1){ try{ idxpSt.c1.dispose(); }catch(e){} idxpSt.c1 = null; }
+  box1.innerHTML = '';
+  idxpSt.c1 = echarts.init(box1);
+  idxpSt.c1.setOption({
+    animation: false,
+    backgroundColor: 'transparent',
+    legend: {
+      show: true, top: 1, left: 'center', itemGap: 12, itemWidth: 12, itemHeight: 2,
+      textStyle: {color: cTx2, fontSize: 9},
+      data: ['股债利差', d.name + ' 收盘', '均线(' + d.ma_lbl + ')', '+2σ', '-2σ']
+    },
+    grid: {left: 58, right: 60, top: 26, bottom: 46},
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: {type: 'cross', label: {backgroundColor: 'rgba(60,60,72,0.92)'}},
+      backgroundColor: 'rgba(24,24,30,0.94)',
+      borderColor: 'rgba(255,255,255,0.14)',
+      textStyle: {color: '#e0e0f0', fontSize: 10},
+      formatter: function(ps){
+        if(!ps || !ps.length) return '';
+        var ix = ps[0].dataIndex, o = dates[ix] + '<br/>';
+        var s = sp[ix], a = av[ix];
+        o += '<span style="color:' + cSpread + '">■</span> 股债利差 ' + (s != null ? (+s).toFixed(dec) : '--');
+        if(s != null && isPe) o += ' <span style="color:#8a8a9a">(' + ((+s) * 100).toFixed(2) + '%)</span>';
+        o += '<br/>';
+        o += '<span style="color:' + cAvg + '">■</span> 均线 ' + (a != null ? (+a).toFixed(dec) : '--') + '<br/>';
+        o += '<span style="color:' + cUpB + '">■</span> +2σ ' + (up[ix] != null ? (+up[ix]).toFixed(dec) : '--') + '<br/>';
+        o += '<span style="color:' + cLoB + '">■</span> -2σ ' + (lo[ix] != null ? (+lo[ix]).toFixed(dec) : '--') + '<br/>';
+        o += '<span style="color:' + cIdx + '">■</span> ' + d.name + ' ' + (cl[ix] != null ? (+cl[ix]).toFixed(2) : '--');
+        return o;
+      }
+    },
+    xAxis: {
+      type: 'category', data: dates, boundaryGap: false,
+      axisLine: {lineStyle: {color: cTx2}},
+      axisLabel: {color: cTx2, fontSize: 9, hideOverlap: true},
+      axisTick: {show: false}
+    },
+    yAxis: [
+      {
+        type: 'value', scale: true, name: isPe ? '利差' : '百分点',
+        nameTextStyle: {color: cSpread, fontSize: 9},
+        axisLabel: {color: cSpread, fontSize: 9, formatter: function(v){ return (+v).toFixed(dec); }},
+        splitLine: {lineStyle: {color: cSplit}}
+      },
+      {
+        type: 'value', scale: true, name: '指数', position: 'right',
+        nameTextStyle: {color: cIdx, fontSize: 9},
+        axisLabel: {color: cIdx, fontSize: 9, formatter: function(v){ return (+v).toFixed(0); }},
+        splitLine: {show: false}
+      }
+    ],
+    dataZoom: [
+      {type: 'inside', xAxisIndex: 0, start: 0, end: 100},
+      {type: 'slider', xAxisIndex: 0, height: 14, bottom: 6,
+       borderColor: cSplit, fillerColor: 'rgba(79,157,255,0.10)',
+       handleStyle: {color: cTx2}, textStyle: {color: cTx2, fontSize: 8},
+       labelFormatter: function(i, v){ return String(v).slice(0, 7); }}
+    ],
+    series: [
+      {name: d.name + ' 收盘', type: 'line', yAxisIndex: 1, data: cl, showSymbol: false,
+       connectNulls: true, lineStyle: {width: 1, color: cIdx, opacity: IDX_HEAD}, itemStyle: {color: cIdx}, z: 1},
+      {name: '+2σ', type: 'line', yAxisIndex: 0, data: up, showSymbol: false,
+       connectNulls: true, lineStyle: {width: 1, color: cUpB, type: 'dashed'}, itemStyle: {color: cUpB}, z: 2},
+      {name: '-2σ', type: 'line', yAxisIndex: 0, data: lo, showSymbol: false,
+       connectNulls: true, lineStyle: {width: 1, color: cLoB, type: 'dashed'}, itemStyle: {color: cLoB}, z: 2},
+      {name: '均线(' + d.ma_lbl + ')', type: 'line', yAxisIndex: 0, data: av, showSymbol: false,
+       connectNulls: true, lineStyle: {width: 1.2, color: cAvg}, itemStyle: {color: cAvg}, z: 3},
+      {name: '股债利差', type: 'line', yAxisIndex: 0, data: sp, showSymbol: false,
+       connectNulls: true, lineStyle: {width: 1.5, color: cSpread}, itemStyle: {color: cSpread},
+       areaStyle: {color: light ? 'rgba(31,111,235,0.06)' : 'rgba(79,157,255,0.07)'}, z: 4}
+    ]
+  }, true);
+  try{ idxpSt.c1.resize(); }catch(e){}
+  idxpBindResize();
+}
+
+function idxpEbSub(d){
+  var a = d.name + ' · ' + d.n + ' 个交易日 · ' + d.start + ' ~ ' + d.end;
+  a += ' · ' + (d.formula_lbl || d.formula) + ' · 均线 ' + (d.ma_lbl || (d.ma + '个月'));
+  if(d.pct_rank != null) a += ' · 分位 ' + (+d.pct_rank).toFixed(1) + '%';
+  if(d.last_z != null) a += ' · z ' + (+d.last_z).toFixed(2);
+  a += ' · 源 ' + (d.src || '?');
+  return a;
+}
+
+/* v2.369c: 三处一起改 —— 连点「PE → 股息TTM → 2.5年 → 5年 → 3年」必须落到最后一帧。
+
+   ① `loading` 早退：跑着的时候不再丢弃, 只记下最新想要的口径(want)
+   ② 补帧判据：结束前把「这次实际发出的口径」和「现在最新想要的」比, 不等就再拉
+      (v2.369b 写成拿 want 和自己比, 恒不相等 ⇒ 永远不补, 停在乱序的某一帧)
+   ③ 乱序覆盖：每次请求带自增 seq, 回来时 seq 不是最新就整帧丢弃 ——
+      否则慢的旧请求后到会把已经画好的新帧盖掉(这才是「点了没反应」最常见的形态) */
+async function idxPairLoadEb(force){
+  var code = idxpEbCodeOf(idxpSt.cur) || idxpEbSt.code;
+  idxpEbSt.code = code;
+  var want = code + '|' + idxpEbSt.formula + '|' + idxpEbSt.ma;
+  idxpEbSt.want = want;
+  if(idxpEbSt.loading) return;              /* 跑着的那次结束时会自己补 */
+  idxpEbSt.loading = true;
+  try{
+    while(true){
+      var sent = (idxpEbCodeOf(idxpSt.cur) || idxpEbSt.code)
+                 + '|' + idxpEbSt.formula + '|' + idxpEbSt.ma;
+      idxpEbSt.want = sent;
+      var _seq = (idxpEbSt.seq = (idxpEbSt.seq || 0) + 1);
+      if(force || !idxpSt.c1) idxpMsg('计算中…');
+      var d = await api('/api/idx_eb?code=' + code + '&formula=' + idxpEbSt.formula
+                        + '&ma=' + idxpEbSt.ma);
+      /* ③ 期间又点了别的 ⇒ 这一帧作废, 由下面 while 再拉最新的 */
+      if(_seq !== idxpEbSt.seq) continue;
+      if(d && d._err){ idxpMsg('取数失败: ' + d._err, 'err'); return; }
+      if(!d || !d.ok){ idxpMsg((d && d.error) || '取数失败', 'err'); return; }
+      if(d.ov) idxpEbSt.ov = d.ov;
+      var t1 = $('idxp-title'), t2 = $('idxp-sub');
+      if(t1) t1.textContent = idxpEbLbl(code);
+      if(t2){
+        t2.textContent = idxpEbSub(d);
+        t2.title = '股债利差 = ' + (d.formula === 'pe'
+          ? '1/滚动市盈率TTM − 10年期国债收益率(%)/100'
+          : '10年期国债收益率 − 股息率')
+          + '\n通道 = ' + d.ma + ' 个月滚动均值 ± 2 倍总体标准差(扩张窗口: 首日到当期)'
+          + '\n数据源: ' + (d.src === 'legulegu' ? '乐咕 legulegu 官方接口(免费档只开沪深300)'
+                                                : '中证 index-perf 的 peg 字段 + 东财 10 年期国债')
+          + '\n中证 peg 与乐咕口径差约 0.002 个百分点, 那是数据源差异';
+      }
+      idxpEbPaintTabs();
+      idxpMsg('');
+      idxpDrawEb(d);
+      /* ② 拉到的是最新口径就收工; 不是就再来一轮 */
+      var now = (idxpEbCodeOf(idxpSt.cur) || idxpEbSt.code)
+                + '|' + idxpEbSt.formula + '|' + idxpEbSt.ma;
+      if(now === sent){ return; }
+      code = idxpEbCodeOf(idxpSt.cur) || idxpEbSt.code;
+      idxpEbSt.code = code;
+      force = false;
+    }
+  }catch(e){
+    idxpMsg('渲染失败: ' + (e && e.message), 'err');
+  }finally{
+    idxpEbSt.loading = false;
+  }
+}
+
+/* 存档秒显(与 v2.368 比值对同一套范式): data_archive/window/idx_eb.json 只有 40ms */
+async function idxpEbArchiveFirst(){
+  try{
+    var s = await api('/api/snapshot?name=idx_eb');
+    if(!s || !s.ok || !s.payload || !s.payload.ok) return false;
+    var p = s.payload;
+    if(!(p.dates && p.dates.length)) return false;
+    /* 存档只存最后一次看的那一档; 换档/换公式时不能拿它冒充 */
+    if(p.code && p.code !== (idxpEbCodeOf(idxpSt.cur) || idxpEbSt.code)) return false;
+    if(p.formula && p.formula !== idxpEbSt.formula) return false;
+    var t1 = $('idxp-title'), t2 = $('idxp-sub');
+    if(t1) t1.textContent = idxpEbLbl(p.code || idxpEbSt.code);
+    if(t2) t2.textContent = idxpEbSub(p);
+    idxpEbPaintTabs();
+    idxpDrawEb(p);
+    idxpMsg('存档 ' + String(s.saved_at || '').slice(5, 16) + ' · 正在拉最新…');
+    return true;
+  }catch(e){ return false; }
 }
 
 function idxpBindResize(){
@@ -20851,6 +21228,12 @@ window.idxListEnter = idxListEnter;
 window.idxListReload = idxListReload;
 
 window.idxPairPick = idxPairPick;
+/* v2.369: 内联 onclick 走全局作用域 —— 四个股债利差函数也必须挂上去
+   (v2.277 / v2.353 / v2.360 / v2.363 同一条坑) */
+window.idxpEbFormula = idxpEbFormula;
+window.idxpEbMa = idxpEbMa;
+window.idxpEbSync = idxpEbSync;
+window.idxpEbWhy = idxpEbWhy;
 /* v2.363c: `window.idxListSetRange = idxListSetRange;` 已删 —— v2.363 把「半年/1年/2年/全部」
    那排区间按钮和它对应的 idxListSetRange() 一起拿掉了，这行导出就成了对**不存在的函数**的引用，
    页面加载即 ReferenceError（不报在界面上，只在控制台，属于「看着没事、其实一直在抛」）。

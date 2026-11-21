@@ -111,6 +111,7 @@ from quant_terminal import version as _ver
 #   数据全复用 board_rank._facts()/_maps() 的现成缓存, 不新增网络源。
 from quant_terminal import yuntu as _yt
 from quant_terminal import idx_store as _ids
+from quant_terminal import equity_bond as _eb   # v2.369 股债利差
 from quant_terminal import etf_src as _etf      # v2.367: 5 只沪深300ETF + 头部占比指标
 # v2.360 (2026-11-21 用户 m38439): 指数登记表 —— 全仓唯一一份。
 #   原先 INDEX_CODES / INDEX_NAMES 各写死七码, 用户要求「顶栏两格可右键换指数」后
@@ -6649,6 +6650,61 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                 _sp['ok'] = True
                 self._json(_sp)
 
+            elif path == '/api/idx_eb':
+                """v2.369 (用户 m40973): 股债利差 —— 复刻 legulegu.com 的同名指标。
+
+                口径（逐条照乐咕，已用 5248 个点逐位对拍通过）：
+                  · 公式一 pe    : 1/指数加权滚动PE_TTM − 10年期国债收益率(%)/100  ⇒ 小数
+                  · 公式二 dvttm : 10年期国债收益率 − 指数等权股息率TTM           ⇒ 百分点
+                  · 公式三 dv    : 10年期国债收益率 − 指数静态股息率             ⇒ 百分点
+                  · 通道 = W 个月（不是交易日数！）滚动均值 ± 2×总体标准差，
+                    W=30(2.5年) / 36(3年) / 60(5年)，默认 30
+
+                参数:
+                  code=000300|000016|000905   标的（默认 000300 沪深300）
+                  formula=pe|dvttm|dv         公式（默认 pe；后两个只有沪深300 有）
+                  ma=30|36|60                 通道窗口（月）
+                  limit=N                     只留最后 N 个点
+                  mode=meta                  只返回三档元信息 + 深度（不返回序列）
+                  mode=sync                  同步一次源表（会联网，约 10~15 秒）
+
+                数据来源（详见 quant_terminal/equity_bond.py 的 docstring）：
+                  · 沪深300 三套公式全量 ⇒ 乐咕自家 API（免费档只开 000300.SH）
+                  · 上证50 / 中证500 只有 pe ⇒ 中证 index-perf 的 peg 字段 + 国债自算
+                  · 10 年期国债 = 东财 RPTA_WEB_TREASURYYIELD 的 EMM00166466
+                """
+                _mode = (qs.get('mode', '') or '').strip().lower()
+                try:
+                    if _mode == 'meta':
+                        _d7 = _eb.meta()
+                        _d7['ov'] = _eb.overview()
+                    elif _mode == 'sync':
+                        _r7 = _eb.sync(deep=bool(qs.get('deep')) )
+                        _d7 = {'ok': True, 'sync': _r7, 'ov': _eb.overview()}
+                    else:
+                        _c7 = (qs.get('code', '000300') or '000300').strip()
+                        _f7 = (qs.get('formula', 'pe') or 'pe').strip().lower()
+                        try:
+                            _m7 = int(qs.get('ma', '30') or 30)
+                        except (TypeError, ValueError):
+                            _m7 = 30
+                        try:
+                            _l7 = int(qs.get('limit', '0') or 0)
+                        except (TypeError, ValueError):
+                            _l7 = 0
+                        _d7 = _eb.series(_c7, _f7, _m7, _l7)
+                        if _d7.get('ok'):
+                            _d7['ov'] = _eb.overview()
+                except Exception as _e7:
+                    _swlog('idx_eb', _e7)
+                    _d7 = {'ok': False, 'error': '股债利差计算失败: %s' % repr(_e7)[:150]}
+                if _d7.get('ok'):
+                    try:
+                        _arc.save_window('idx_eb', _d7)
+                    except Exception:
+                        pass
+                self._json(_d7)
+
             elif path == '/api/idx_meta':
                 """v2.359: 单只指数的本地存档概况（行数/起止日/文件 mtime），不联网。"""
                 _c = (qs.get('code', '') or '').strip().lower()
@@ -9615,6 +9671,12 @@ if __name__ == '__main__':
             _etf.head_ratio_series()
         except Exception as _e2:
             _swlog('idx_head_warm', _e2)
+        # v2.369: 股债利差 —— 每日增量归档(盘中跳过, 收盘后才拉)。**不阻塞**:
+        #   乐咕 + 中证 + 东财三家串行约 12 秒, 放在预热线程里跑就行。
+        try:
+            _eb.snapshot_today()
+        except Exception as _e3:
+            _swlog('idx_eb_warm', _e3)
         return '%d 只/%s/%s' % (len(_done), _syn, _sn)
 
     def _idx_auto_sync(blocking=False):
