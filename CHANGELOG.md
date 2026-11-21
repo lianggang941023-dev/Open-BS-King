@@ -19,6 +19,29 @@
 
 ---
 
+---
+## v2.367f — 2026-11-22
+
+### 修复：`/api/idx_head` 在东财日K 端点不可达时整条指标失效
+
+- **现象**：特色指标第 4 项「沪深300头部/全流通市值」显示「指标暂不可用（取不到 ETF 或沪深300 数据）」，
+  而此时 `push2.eastmoney.com/api/qt/stock/get`（快照 `f84/f117`）仍 200 正常。
+- **真因链**：`etf_src.head_ratio_series()` 里 `E.read_index_daily(code)` 传的是**六位** `'510300'`，
+  而本地存档文件名是 `SH510300.csv` ⇒ 恒 0 根 ⇒ 立刻落到联网 `full_bars()` ⇒ 东财 kline 一挂就 `None`
+  ⇒ `None.get()` 抛异常 ⇒ 被 `/api/idx_head` 的 `except` 吞成一句文案。**「本地存档 + 每日增量」的定位被自己绕过了。**
+- **三层修**：
+  1. `rows = E.read_index_daily(norm_code(code)) or []`，只有 `len(rows) < 30` 才联网补数，且补数失败只打 stderr 不致命；
+  2. 新增 `_tencent_bars(code, max_pages=6, page=640)` —— 腾讯 `_fqkline_req` 对 ETF 字段完全同构，
+     带 `end=` 往前翻页；实测单页硬上限 **640 根**，2020-01-02 起只需 3 页；
+  3. 🔴 `full_bars()` 开头 `if not raw: return None` 让末尾的 `return _tencent_bars(code)` 成为**死代码**
+     （v2.367e 加了兜底仍 0 根就是这个原因），改成 `kl = []; if raw: …` 一路落到兜底。
+- **验收**：`/api/idx_head` 冷 3743ms → 热 **45 / 7 ms**；`/api/idx_list?limit=60` 164ms；`/api/idx_pairs` 2ms；
+  浏览器第 4 项双图各 1668 点、末值 `4763.84 亿 / 0.9876%`、`idxp-msg` 为空。
+
+### 注意
+
+- `version._VER_MARK` 会把源码注释里的 `v2.367d:` 之类当成版本号 ⇒ 发版时 `VERSION` 必须跟到代码里的最大标记 **v2.367f**。
+
 ## v2.367 — 2026-11-22
 
 ### 新增：5 只沪深300ETF 进「指数一览」+ 特色指标「沪深300头部/全流通市值」

@@ -197,13 +197,17 @@ def full_bars(code):
            '&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=101&fqt=1'
            '&beg=%s&end=20500101') % (_KL, sec, BEG)
     raw = _get(url, _H_QUOTE)
-    if not raw:
-        return None
-    try:
-        kl = ((json.loads(raw.decode('utf-8', 'replace')).get('data') or {})
-              .get('klines') or [])
-    except Exception:
-        return None
+    # 🔴 v2.367f: **原来这里是 `if not raw: return None`，兜底那段永远走不到** ——
+    #   东财 kline 一挂就是整片空 raw，函数在第 6 行就返回了，末尾的
+    #   `return _tencent_bars(code)` 是死代码（v2.367e 加了兜底却仍然 0 根，就是这么来的）。
+    #   改成：raw 为空就留空 kl，一路落到末尾兜底。
+    kl = []
+    if raw:
+        try:
+            kl = ((json.loads(raw.decode('utf-8', 'replace')).get('data') or {})
+                  .get('klines') or [])
+        except Exception:
+            kl = []
     out = []
     for r in kl:
         p = str(r).split(',')
@@ -216,6 +220,55 @@ def full_bars(code):
         except ValueError:
             continue
     out.sort(key=lambda x: x['date'])
+    if out:
+        return out
+    # v2.367e: 东财 kline 端点会整片 RemoteDisconnected（2026-11-22 凌晨实测）
+    #   ⇒ 退到腾讯翻页。**不静默** —— 留一行痕迹，否则以后看不出数是从哪来的。
+    print('[etf_src] 东财日K 取不到 %s, 退腾讯兜底' % _secid(code), file=sys.stderr)
+    return _tencent_bars(code)
+
+
+def _tencent_bars(code, max_pages=6, page=640):
+    """腾讯日K（东财挂掉时的兜底）。ETF 与个股同构，带 end= 可往前翻页。
+
+    实测单页硬上限 640 根（sh510300 `count=2000` 也只回 640）：
+      ''         → 2024-04-01~最新
+      '2023-12-31'→ 2021-05-18~2023-12-29
+      '2022-06-30'→ 2019-11-11~2022-06-30
+    用户只要求 2020-01-02 起 ⇒ max_pages=6 远超所需，留余量。
+    返回 None 表示一页都没拿到。
+    """
+    norm = norm_code(code)
+    seen = {}
+    end = ''
+    prev = None
+    for _i in range(max(1, int(max_pages))):
+        try:
+            arr = E._norm_tencent_bars(E._fqkline_req(norm, count=str(page), end=end), norm) or []
+        except Exception as _e:
+            print('[etf_src] 腾讯兜底失败 %s: %r' % (norm, _e), file=sys.stderr)
+            arr = []
+        if not arr:
+            break
+        for b in arr:
+            seen[b['date']] = b
+        earliest = arr[0]['date']
+        if len(arr) < page:
+            break                      # 已到上市日
+        if prev is not None and earliest >= prev:
+            break                      # 上游不认 end 了, 防死循环
+        prev = earliest
+        try:
+            import datetime as _dt
+            end = (_dt.datetime.strptime(earliest, '%Y-%m-%d')
+                   - _dt.timedelta(days=1)).strftime('%Y-%m-%d')
+        except Exception:
+            break
+    if not seen:
+        return None
+    out = [seen[k] for k in sorted(seen)]
+    # 与东财口径对齐：用户要求 2020 年第一个交易日之前不要
+    out = [r for r in out if r['date'] >= '2020-01-02']
     return out or None
 
 
@@ -485,11 +538,25 @@ def head_ratio_series(limit=0):
         _K_LIVE[0] = (hs300_fcap_yi() / _c) if _c > 0 else 0.0
     except Exception:
         _K_LIVE[0] = 0.0
+    # v2.367d: **本地优先** —— 这条序列的定位就是「本地存档 + 每日增量」，不是每次现拉。
+    #   2026-11-22 凌晨东财 kline 端点整片 RemoteDisconnected，而这里原来每次无条件调
+    #   full_bars() ⇒ 拿到 None ⇒ 后面 None.get() 抛 AttributeError ⇒ 被路由 except
+    #   吞成「指标暂不可用」，特色指标第 4 项整块画不出来。本地 1668 根本来就在。
+    #   现在：本地够 30 根就**纯离线**算完，一次网络都不发。
     closes = {}
     for code, _sec, _sh in ETFS:
-        rows = E.read_index_daily(code) or []
+        # ⚠ ETFS 里 code 是六位（'510300'），本地文件名是 SH510300.csv
+        #   ⇒ 必须过 norm_code()，否则 read_index_daily 恒返回 0 根（踩过两次）
+        rows = E.read_index_daily(norm_code(code)) or []
         if len(rows) < 30:
-            rows = full_bars(code) or []
+            _fb = None
+            try:
+                _fb = full_bars(code)
+            except Exception as _e0:
+                print('[etf_src] 补 %s 日K失败(不致命): %r' % (code, _e0), file=sys.stderr)
+                _fb = None
+            if _fb and len(_fb) > len(rows):
+                rows = _fb
         closes[code] = {r['date']: r['close'] for r in rows}
     hs = {r['date']: r['close'] for r in (E.read_index_daily('sh000300') or [])}
     shares = {}
@@ -572,13 +639,25 @@ def head_ratio_series(limit=0):
         heads.append(round(tot, 2))
         fcaps.append(round(fcap, 2))
         ratios.append(round(tot / fcap * 100.0, 4) if ok else None)
+    # v2.367d: k_now 原来必打东财快照（hs300_fcap_yi），端点一挂就得 0；
+    #   而且 hs300_close() 被调了两次。这里包一层：拿不到就退回 ratio json 里最新的 K。
+    _kn = 0.0
+    try:
+        _cc = hs300_close()
+        _fc = hs300_fcap_yi()
+        if _cc > 0 and _fc > 0:
+            _kn = round(_fc / _cc, 6)
+    except Exception:
+        _kn = 0.0
+    if not _kn and ks:
+        _kn = ks[-1][1]
     _out = {'ok': True, 'code': HEAD_CODE, 'name': HEAD_NAME, 'dates': dates,
             'head': heads, 'fcap': fcaps, 'ratio': ratios,
             'n': len(dates), 'start': dates[0] if dates else '',
             'end': dates[-1] if dates else '',
             'snap_dates': sorted(snap_dates),
             'n_snap': len(snap_dates),
-            'k_now': round(hs300_fcap_yi() / max(1e-9, hs300_close()), 6) if hs300_close() else 0.0}
+            'k_now': _kn}
     _HEAD_CACHE['ts'] = time.time()
     _HEAD_CACHE['key'] = _k
     _HEAD_CACHE['data'] = _out
