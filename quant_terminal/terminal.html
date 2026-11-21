@@ -2754,6 +2754,55 @@ var tradingStatus='POST_MARKET',indexTimer=null;
 // ---- 指数实时刷新 ----
 // v2.70 (2026-09-12): 指数名 / 趋势档位配色 提为文件级 — renderIndices 与 悬停浮窗 共用
 var IDX_NAMES={'sh000001':'上证指数','sz399001':'深证成指','sz399006':'创业板指','sh000680':'科创综指','sh000688':'科创50','sh000300':'沪深300','sz399905':'中证500'};
+/* ---- v2.360d (用户 m38439/m38512): 顶栏指数栏「右键原位替换」-------------------
+   只有两格可换（沪深300 / 中证500），其余五个是最常用指数不许动。
+   换法 = 原位替换：右键 → 菜单里点某个候选 → 这一格就显示它；候选里本来就有
+     本格的默认值，所以再右键点回去即可。
+   **不管这格显示谁，实时刷新 / 盘后存档 / 悬停浮窗 / 点击开K线 都走同一条链路**
+     —— 后端 v2.360a/b 已把 12 只全部塞进 BAR_CODES（/api/sentiment 的 indices 与
+        index_hist、以及 index_daily 存档都是 12 只），前端只管显示哪一格。
+   记住 = localStorage['qt_idx_slot_v1'] = {'sh000300':'883957', ...}（只存偏离默认的）*/
+var IDX_SLOT_LS='qt_idx_slot_v1';
+var INDEX_TOP7=['sh000001','sz399001','sz399006','sh000680','sh000688','sh000300','sz399905'];
+var INDEX_SLOTS={};        /* slot -> 候选数组 [{code,name,short}], 由 /api/idx_slots 填 */
+var idxSlotPick={};        /* slot -> 当前选中的 code（偏离默认才有键）*/
+function idxSlotsLoad(){
+  try{
+    var s=localStorage.getItem(IDX_SLOT_LS);
+    idxSlotPick=(s?JSON.parse(s):null)||{};
+  }catch(e){ idxSlotPick={}; }
+}
+function idxSlotsSave(){
+  try{ localStorage.setItem(IDX_SLOT_LS, JSON.stringify(idxSlotPick)); }catch(e){}
+}
+/* 某格当前该显示哪个指数 —— 没换过就返回默认值 */
+function slotCodeOf(slot){
+  var c=idxSlotPick[slot];
+  if(c && c!==slot) return c;
+  return slot;
+}
+function idxSlotsFetch(){
+  api('/api/idx_slots').then(function(d){
+    if(d && d._err) return;
+    INDEX_SLOTS=(d&&d.slots)||{};
+    /* 后端是最新事实：万一 localStorage 里存了个已经下线的代码，丢掉它 */
+    var bad=false, k, i, ok;
+    for(k in idxSlotPick){
+      ok=false;
+      var cand=INDEX_SLOTS[k]||[];
+      for(i=0;i<cand.length;i++){ if(cand[i].code===idxSlotPick[k]){ ok=true; break; } }
+      if(!ok){ delete idxSlotPick[k]; bad=true; }
+    }
+    if(bad) idxSlotsSave();
+    /* 记下来的名字也可能变（后端短名调整），顺手覆盖 IDX_NAMES 的补充项 */
+    var nm=(d&&d.names)||{}, sh=(d&&d.shorts)||{};
+    for(k in nm){ if(nm[k]) IDX_NAMES[k]=sh[k]||nm[k]; }
+    /* v2.360g: 12 只到手了, 现在才真正并进多股同列那两张表 */
+    try{ if(typeof mtxAbsorbIdx==='function') mtxAbsorbIdx(); }catch(e){}
+    try{ if(window._lastSentiment) renderIndices(window._lastSentiment.indices, window._lastSentiment.index_regimes); }catch(e){}
+  });
+}
+idxSlotsLoad();
 // v2.17.2 趋势档位颜色: 红=最好 → 绿=最差 (红-绿渐变中间色)
 // v2.188 (2026-10-23) 用户定案:「震荡」→「横盘震荡」—— 为的是**八个档位一律 4 个字**。
 //   只有「震荡」是 2 字, 顶栏某格一旦落到它, 整条指数栏就短一截、后面几格跟着左移(用户在意这个跳动)。
@@ -2765,7 +2814,10 @@ var IDX_REGIME_COLORS={'上升趋势':'var(--up)','偏多震荡':'var(--regime-1
 function renderIndices(indices, regimes){
   if(!indices)return;
   var names=IDX_NAMES;
-  var order=['sh000001','sz399001','sz399006','sh000680','sh000688','sh000300','sz399905'];
+  /* v2.360d: 七格由 INDEX_TOP7 生成; 其中 sh000300 / sz399905 两格取 idxSlotPick 里的替换值。
+     其余五格 slotCodeOf 返回它自己（没有键就是默认），等价于原来写死的那七个。 */
+  var order=[];
+  for(var _o=0;_o<INDEX_TOP7.length;_o++) order.push(slotCodeOf(INDEX_TOP7[_o]));
   var REGIME_COLORS=IDX_REGIME_COLORS;
   // v2.63 (2026-09-08): 名称着色 — 单指数上升趋势 → 名称金色; 全部指数上升趋势 → 名称彩虹动画(优先)
   // 先扫一遍确定渲染格与是否全升(任一格非"上升趋势"或缺失 regime 即不满足)
@@ -2774,7 +2826,7 @@ function renderIndices(indices, regimes){
     var k=order[i]; var v=indices[k]; if(!v)continue;
     var r=regimes?regimes[k]:null;
     if(!r||r.regime!=='上升趋势')allUp=false;
-    items.push({k:k,v:v,r:r});
+    items.push({k:k,v:v,r:r,slot:(INDEX_SLOTS[k]?k:(i<INDEX_TOP7.length?INDEX_TOP7[i]:k))});
   }
   allUp=allUp&&items.length>0;
   var h='';
@@ -2785,7 +2837,9 @@ function renderIndices(indices, regimes){
     var nmCls=allUp?' rainbow':((r&&r.regime==='上升趋势')?' gold':'');  // 全升彩虹优先于单升金
     // v2.4 (2026-08-07): 点击指数 → 查看该指数日K/分时
     // v2.70 (2026-09-12): 取消原生 title 停留提示("点击查看 X 日K/分时"), 改悬停浮窗 = 前5交易日
-    h+='<span class="idx" style="cursor:pointer" onmouseenter="showIdxTip(event,\''+k+'\');miniIdx(event,\''+k+'\')" onmousemove="showIdxTip(event,\''+k+'\')" onmouseleave="hideTvTip();miniHide()" onclick="openIndexKline(\''+k+'\')">';
+    var _slot=it.slot||'';
+    var _ctx=_slot?(' oncontextmenu="return idxMenuOpen(event,\''+_slot+'\')"'):'';
+    h+='<span class="idx" data-slot="'+(_slot||'')+'" style="cursor:pointer"'+_ctx+' onmouseenter="showIdxTip(event,\''+k+'\');miniIdx(event,\''+k+'\')" onmousemove="showIdxTip(event,\''+k+'\')" onmouseleave="hideTvTip();miniHide()" onclick="openIndexKline(\''+k+'\')">';
     h+='<span class="name'+nmCls+'">'+n+'</span>&nbsp;';
     // v2.104 (2026-09-19): 名称↔点数之间补 1 个等宽空格(&nbsp;) —— 这两个 span 原来紧贴,
     //   和右边「点数↔涨跌 2 空格」摆在同一排, 显得名称和数字粘在一起(用户 9/19 指出)。
@@ -2796,6 +2850,7 @@ function renderIndices(indices, regimes){
     h+='<small style="color:'+tc+'">'+(r?r.regime:'')+'</small>';
     h+='</span>';
   }
+  window._lastSentiment={indices:indices, index_regimes:regimes};
   $('idx-bar').innerHTML=h;
 }
 // ---- v2.62 (2026-09-10): 成交预测悬停浮窗 (5行明细) ----
@@ -10755,7 +10810,8 @@ async function loadKline(){
   // (sh000001→sz000001平安银行/sh000688→国城矿业等; sz399xxx碰巧新浪能识别)
   if(d.is_index){
     var idxNames={'sh000001':'上证指数','sz399001':'深证成指','sz399006':'创业板指','sh000680':'科创综指','sh000688':'科创50','sh000300':'沪深300','sz399905':'中证500'};
-    var inm=idxNames[code.toLowerCase()]||code;
+    /* v2.360f: 先查全局 IDX_NAMES（12 只全在里面, 含同花顺全A）, 再落回本函数里的旧七码 */
+    var inm=(window.IDX_NAMES&&window.IDX_NAMES[code.toLowerCase()])||idxNames[code.toLowerCase()]||code;
     var ih='';
     ih+='<div style="display:flex;justify-content:space-between;margin-bottom:4px">';
     ih+='<b style="color:var(--cyan);font-size:11px">📊 '+inm+'</b>';
@@ -17283,7 +17339,87 @@ function qsFlipRatio(ev){
   function boot(){
     hdrRatioRead();
     hdrRatioApply();
+    try{ idxSlotsFetch(); }catch(e){}   /* v2.360d: 拉一次两格的候选表 */
   }
+/* ---- v2.360d: 顶栏指数栏右键菜单 ---------------------------------------------
+   idxMenuOpen(e, slot)  —— 右键那一格: 拦掉浏览器菜单, 把候选铺成竖列表贴在鼠标右下。
+   idxMenuPick(slot, code) —— 左键点某项: **原位替换**那一格并记住。选的就是当前显示的
+     那个也不报错(幂等); 选回默认值等于恢复原状。
+   idxMenuClose() —— 点菜单外 / 滚轮 / ESC 都收掉。
+   ⚠ 菜单是 body 直系子节点(fixed), 点击判定要 `contains` 而不是 stopsPropagation,
+     否则在菜单里按下会把菜单自己关掉(v2.347 踩过)。*/
+var _idxMenuSlot='';
+function idxMenuEl(){ return document.getElementById('idx-menu'); }
+function idxMenuClose(){
+  var m=idxMenuEl(); if(m){ m.style.display='none'; }
+  _idxMenuSlot='';
+}
+function _idxMenuEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+function idxMenuOpen(e, slot){
+  var m=idxMenuEl(); if(!m) return true;
+  var cand=(INDEX_SLOTS&&INDEX_SLOTS[slot])||[];
+  if(!cand.length){
+    /* 候选表还没拉到(极早期/接口失败) → 至少给本格默认值, 不能什么都弹不出来 */
+    cand=[{code:slot,name:(IDX_NAMES[slot]||slot),short:(IDX_NAMES[slot]||slot)}];
+  }
+  var cur=slotCodeOf(slot), h='', i, c, on;
+  for(i=0;i<cand.length;i++){
+    c=cand[i]; on=(c.code===cur);
+    h+='<div class="idx-mi" data-code="'+_idxMenuEsc(c.code)+'" style="padding:4px 12px;cursor:pointer;'
+      +(on?'color:var(--gold);background:rgba(240,192,64,0.10)':'color:var(--tx0)')
+      +';white-space:nowrap">'+(on?'● ':'　')+_idxMenuEsc(c.short||c.name||c.code)+'</div>';
+  }
+  m.innerHTML='<div id="idx-menu-title" style="padding:3px 10px 4px;color:var(--tx3);font-size:9px;'
+    +'border-bottom:1px solid var(--bd);margin-bottom:2px;white-space:nowrap">替换「'
+    +_idxMenuEsc(IDX_NAMES[slot]||slot)+'」这一格</div>'+h;
+  m.style.display='block'; m.style.left='0px'; m.style.top='0px';
+  var w=m.offsetWidth||120, ht=m.offsetHeight||120;
+  var x=e.clientX+2, y=e.clientY+2;
+  if(x+w>window.innerWidth-4)  x=Math.max(4, e.clientX-w-2);
+  if(y+ht>window.innerHeight-4) y=Math.max(4, e.clientY-ht-2);
+  m.style.left=x+'px'; m.style.top=y+'px';
+  _idxMenuSlot=slot;
+  /* 悬停高亮 —— 与行右键菜单同一套观感 */
+  var its=m.querySelectorAll('.idx-mi');
+  for(i=0;i<its.length;i++){
+    its[i].addEventListener('mouseover', function(){
+      var a=m.querySelectorAll('.idx-mi'), j;
+      for(j=0;j<a.length;j++){ if(a[j]!==this) a[j].style.background='transparent'; }
+      if(this.textContent.charAt(0)!=='●') this.style.background='rgba(240,192,64,0.14)';
+    });
+  }
+  return false;   /* 拦掉浏览器原生菜单 */
+}
+function idxMenuPick(slot, code){
+  if(!slot||!code) return;
+  if(code===slot){ delete idxSlotPick[slot]; }   /* 选回默认 = 不写键 */
+  else{ idxSlotPick[slot]=code; }
+  idxSlotsSave();
+  idxMenuClose();
+  /* 立刻按新格子重画, 不等下一轮 /api/sentiment */
+  try{ if(window._lastSentiment) renderIndices(window._lastSentiment.indices, window._lastSentiment.index_regimes); }catch(e){}
+}
+(function(){
+  /* 点菜单项 */
+  document.addEventListener('click', function(e){
+    var it=e.target && e.target.closest ? e.target.closest('#idx-menu .idx-mi') : null;
+    if(it){ idxMenuPick(_idxMenuSlot, it.getAttribute('data-code')); return; }
+    var m=idxMenuEl();
+    if(m && m.style.display==='block' && !m.contains(e.target)) idxMenuClose();
+  }, true);
+  document.addEventListener('wheel', function(){ idxMenuClose(); }, {passive:true, capture:true});
+  document.addEventListener('keydown', function(e){
+    if((e.key==='Escape'||e.keyCode===27)){ var m=idxMenuEl(); if(m&&m.style.display==='block') idxMenuClose(); }
+  }, true);
+  window.addEventListener('resize', function(){ idxMenuClose(); });
+})();
+/* v2.360e: 内联 oncontextmenu / onclick 走全局作用域, 必须显式挂到 window
+   —— 上面整块写在 boot 的 IIFE 里, 不挂就是 ReferenceError: idxMenuOpen is not defined */
+window.idxMenuOpen=idxMenuOpen;
+window.idxMenuPick=idxMenuPick;
+window.idxMenuClose=idxMenuClose;
+window.idxSlotsFetch=idxSlotsFetch;
+window.slotCodeOf=slotCodeOf;
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 })();
@@ -19502,6 +19638,12 @@ html[data-theme="light"] .lhb2-cpt>span{background:rgba(15,23,42,.05);color:var(
   </div>
 </div>
 <div id="bs-tip"></div>
+<!-- v2.360d (用户 m38439/m38512): 顶栏指数栏右键菜单 —— 只给「沪深300」「中证500」两格用,
+     原位替换成候选指数(候选里含本格默认值, 所以能随时切回)。菜单挂在 body 下, position:fixed,
+     z-index 要高过所有窗口(10050 = 居中 K 线窗那层)。 -->
+<div id="idx-menu" style="position:fixed;display:none;z-index:10120;background:var(--win-glass);border:1px solid var(--bd2);border-radius:3px;box-shadow:0 6px 20px rgba(0,0,0,.55);padding:3px 0;min-width:118px;font-size:11px">
+  <div id="idx-menu-title" style="padding:3px 10px 4px;color:var(--tx3);font-size:9px;border-bottom:1px solid var(--bd);margin-bottom:2px;white-space:nowrap">替换这一格</div>
+</div>
 <!-- v2.309 (2026-11-14 用户 m17854): 股票行右键菜单 —— 原「操作」列的「买」按钮改成这里。
      菜单贴在鼠标右键点的右下方; 点菜单外任何位置(左键/右键)都关掉。 -->
 <div id="row-menu" style="position:fixed;display:none;z-index:10100;background:var(--win-glass);border:1px solid var(--bd2);border-radius:3px;box-shadow:0 6px 20px rgba(0,0,0,.55);padding:3px 0;min-width:132px;font-size:11px">
@@ -21304,7 +21446,21 @@ var MTX_IDXNAME = {};
 (function () {
   for (var k in MTX_IDX) MTX_IDXNAME[MTX_IDX[k]] = k;
   MTX_IDXNAME['中证 500'] = 'sz399905';   // 腾讯那边名字里带空格
+  mtxAbsorbIdx();
 })();
+/* v2.360g: 把登记表里新增的指数（同花顺全A / 中证1000 / 中证全指 / 上证50 / 中证红利）
+   并进多股同列的两张表 —— 否则输「同花顺全A」「883957」都认不出来。
+   ⚠ 上面 IIFE 里那次只是「先拿旧七只」，**真正的并表要等 /api/idx_slots 回来之后**
+     （idxSlotsFetch 的 then 里会再调一次）—— v2.360f 只写在 IIFE 里，等于没并。 */
+function mtxAbsorbIdx() {
+  var nm = window.IDX_NAMES || {};
+  for (var k in nm) {
+    if (!nm[k]) continue;
+    if (!MTX_IDX[k]) MTX_IDX[k] = nm[k];
+    if (!MTX_IDXNAME[nm[k]]) MTX_IDXNAME[nm[k]] = k;
+  }
+}
+window.mtxAbsorbIdx = mtxAbsorbIdx;
 var mtxSt = {open: false, layout: '2x1', mode: 'daily', slots: {}, charts: {}, gen: 0,
              bound: false, askIdx: -1, askT: 0, menuIdx: -1, askCands: [],
              max: false, timer: 0, drag: null, dragT: 0};
@@ -21937,6 +22093,9 @@ function mtxResolve(str) {
       return;
     }
     if (m) {
+      // v2.360g: 同花顺自编指数是**无交易所前缀**的 6 位码（883957 = 同花顺全A），
+      //   下面那两个 sh/sz 前缀查不到它。先按裸码查一次。
+      if (MTX_IDX[s]) { res([{t: 'index', c: s, n: MTX_IDX[s]}]); return; }
       // 6 位裸码: 股票优先, 指数在后 —— 000001 既可能是平安银行也可能是上证指数
       api('/api/stock/search?kw=' + encodeURIComponent(s)).then(function (d) {
         var out = [];

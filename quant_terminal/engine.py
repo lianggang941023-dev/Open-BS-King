@@ -49,6 +49,10 @@ from quant_terminal import turnover
 #   当日 OHLCV)。11:35 那次不写 CSV, 靠这层让「更新板块」用上最新数据。
 #   模块内部按 mtime+size 缓存, 逐只调用也不会反复读盘。
 from quant_terminal import intraday as _intraday
+# v2.360 (2026-11-21 用户 m38439): 指数登记表 —— 全仓唯一一份指数代码表。
+#   在这之前 INDEX_DAILY_CODES / INDEX_MAP / fetch() 的 codes 三处各写一份七码,
+#   用户要求「顶栏两格可右键换指数」后再加就是四处, 改一个漏一个会静默出错。
+from quant_terminal import idx_registry as _idxr
 KLINE_DIR = ds.resolve(ds.get('local', 'kline_dir'))
 POOL_DIR = ds.resolve(ds.get('local', 'snapshot_dir', '选股池'))
 
@@ -67,8 +71,9 @@ def refresh_dirs():
 # 数据源: 除 sh000680 (腾讯仅2025起, 走新浪) 外全部腾讯 fqkline (单次上限2000根≈2018-06起)。
 # 职责: 初次全量回补 / 每日收盘后 guard 追加 / 读路径本地优先(盘中仅取当天live merge, 绝不写盘)
 # ============================================================
-INDEX_DAILY_CODES = ('sh000001', 'sz399001', 'sz399006', 'sh000300', 'sz399905',
-                      'sh000688', 'sh000680')
+# v2.360 (用户 m38512): 不再写死七码, 改为登记表全集 —— 用户明确要求「拉取指数的时候
+#   也要增加这些指数, 不管它是否在主页显示」, 即实时刷新/盘后存档与其它指数同节奏。
+INDEX_DAILY_CODES = tuple(_idxr.BAR_CODES)
 INDEX_DAILY_SINA = frozenset({'sh000680'})          # 腾讯无全史 → 新浪 CN_MarketDataService
 INDEX_DAILY_DIR = os.path.join(os.path.dirname(KLINE_DIR), 'index_daily')
 _IDX_RLOCK = threading.RLock()                       # 读写/ensure/sync 共用 — Windows os.replace 原子性保障
@@ -132,14 +137,25 @@ def fetch_sina_daily(code: str, datalen: int = 1500) -> Optional[List[Dict]]:
 
 
 def _fetch_index_full(code: str) -> Optional[List[Dict]]:
-    """全量: 680→新浪1500 (发布日2020-07-03起全); 其余→腾讯2000根(2018-06起, 单次硬上限)"""
+    """全量回补。三条通路, 由 idx_registry 的 src 决定(别按代码号猜):
+      · src='ths'     → 同花顺网页接口(48_ 前缀)。**同花顺全A 883957 只有这一条**, 腾讯/新浪/东财全空。
+      · 680            → 新浪 1500(腾讯只有 2025 起)
+      · 其余 tencent   → 腾讯 2000 根(2018-06 起, 单次硬上限)
+    v2.360 (用户 m38439): 加 ths 分支 —— 否则 883957 永远 bars=0。"""
+    if _idxr.src_of(code) == 'ths':
+        from quant_terminal import ths_index as _ths_i
+        return _ths_i.full_bars(code) or None
     if code in INDEX_DAILY_SINA:
         return fetch_sina_daily(code, 1500)
     return _norm_tencent_bars(_fqkline_req(code, count='2000'), code) or None
 
 
 def _fetch_index_tail(code: str, n: int = 10) -> Optional[List[Dict]]:
-    """最近 n 根 (guard 每日增量比对用; 节假日返回旧bar, 由调用方比对判定)"""
+    """最近 n 根 (guard 每日增量比对用; 节假日返回旧bar, 由调用方比对判定)
+    v2.360: ths 通路一次给全量, 切片即可(不额外请求第二个接口)。"""
+    if _idxr.src_of(code) == 'ths':
+        from quant_terminal import ths_index as _ths_i
+        return _ths_i.tail_bars(code, n) or None
     if code in INDEX_DAILY_SINA:
         return fetch_sina_daily(code, n)
     return _norm_tencent_bars(_fqkline_req(code, count=str(n)), code) or None
@@ -297,9 +313,14 @@ def write_index_daily(code: str, rows: List[Dict]) -> bool:
 
 def _live_index_bar(code: str) -> Optional[Dict]:
     """盘中当日 live bar (仅 _is_trade_window 真时调用): 腾讯fqkline末5根当日行为主
-    (同源同单位手, 与历史同构); 失败→新浪实时兜底 (fields[8]量股÷100→手)"""
+    (同源同单位手, 与历史同构); 失败→新浪实时兜底 (fields[8]量股÷100→手)
+    v2.360 (用户 m38439): src='ths' 的指数(同花顺全A 883957)走同花顺分时 —— 腾讯/新浪都没有它。
+    """
     if not _is_trade_window():
         return None
+    if _idxr.src_of(code) == 'ths':
+        from quant_terminal import ths_index as _ths_i
+        return _ths_i.live_bar(code)
     today = datetime.now().strftime('%Y-%m-%d')
     try:
         j = _fqkline_req(code, count='5')
@@ -4905,9 +4926,9 @@ def index_hist_recent(n: int = 5) -> Dict[str, List[Dict]]:
 class MarketSentiment:
     """市场情绪量化"""
 
-    INDEX_MAP = {'sh000001': '上证', 'sz399001': '深证', 'sz399006': '创业板',
-                 'sh000680': '科创综指', 'sh000688': '科创50', 'sh000300': '沪深300',
-                 'sz399905': '中证500'}
+    # v2.360 (用户 m38512): 登记表全集 —— 悬停浮窗的「前5日历史趋势」与趋势档位
+    #   要覆盖所有候选指数, 不管它此刻是否显示在顶栏。
+    INDEX_MAP = {c: _idxr.short_of(c) for c in _idxr.BAR_CODES}
 
     def __init__(self):
         self.index_data = {}
@@ -4936,7 +4957,9 @@ class MarketSentiment:
 
     def fetch(self) -> Dict:
         # v1 数据源设置 (2026-08-29): 统一走 ds.fetch_realtime (主备切换, 指数/个股同源)
-        codes = ['sh000001', 'sz399001', 'sz399006', 'sh000680', 'sh000688', 'sh000300', 'sz399905']
+        # v2.360 (用户 m38512): 登记表全集。tencent 通路走 ds.fetch_realtime;
+        #   ths 通路(同花顺全A) ds 没有 provider, 单独补 —— 否则顶栏那格永远空。
+        codes = list(_idxr.BAR_CODES)
         try:
             q = ds.fetch_realtime(codes)
             for code, v in q.items():
@@ -4948,6 +4971,25 @@ class MarketSentiment:
                     'amount_yi': round(float(v.get('amount_yi', 0) or 0), 0)}
         except Exception:
             pass
+        # v2.360: ths 通路补实时价。ds.fetch_realtime 只有 sina/tencent 两个 provider,
+        #   同花顺全A 两边都没有 ⇒ 不补这一手, 顶栏那格就是空白。
+        #   现价/涨跌取同花顺分时末点, 昨收取本地日K末根收盘(与顶栏「涨跌幅」口径一致)。
+        for _c in codes:
+            if _idxr.src_of(_c) != 'ths' or _c in self.index_data:
+                continue
+            try:
+                from quant_terminal import ths_index as _ths_q
+                _m = _ths_q.minute(_c)
+                if not _m.get('ok'):
+                    continue
+                self.index_data[_c] = {
+                    'name': _m.get('name') or _idxr.name_of(_c),
+                    'price': round(float(_m.get('last') or 0), 3),
+                    'change_pct': round(float(_m.get('pct') or 0), 2),
+                    'amount_yi': 0.0,
+                }
+            except Exception:
+                pass
         total_amount = self.index_data.get('sh000001', {}).get('amount_yi', 0) + \
                        self.index_data.get('sz399001', {}).get('amount_yi', 0)
         # v2.62 (2026-09-10): 量能口径改「成交预测 = 预计全天 − 昨日全天」, 分级改较昨日绝对差值。

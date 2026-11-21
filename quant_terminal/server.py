@@ -111,22 +111,24 @@ from quant_terminal import version as _ver
 #   数据全复用 board_rank._facts()/_maps() 的现成缓存, 不新增网络源。
 from quant_terminal import yuntu as _yt
 from quant_terminal import idx_store as _ids
+# v2.360 (2026-11-21 用户 m38439): 指数登记表 —— 全仓唯一一份。
+#   原先 INDEX_CODES / INDEX_NAMES 各写死七码, 用户要求「顶栏两格可右键换指数」后
+#   候选指数(同花顺全A/中证1000/中证全指/上证50)必须也能走指数通路, 否则点进去
+#   会被当个股 ⇒ 拿 BZ/个股 前缀去查, 结果是别人的数据。
+from quant_terminal import idx_registry as _idxr
 
 PORT = 8799  # 新端口, 不冲突旧的8788
 
 # P3-12: INDEX_CODES 模块级单一定义 (原两处handler内重复定义)
 # v2.34c 补 sh000680 科创综指 — 前端指数栏7个指数, 缺它则点击走个股路径显示错误数据(1616根/收盘10.69)
-INDEX_CODES = {'sh000001', 'sz399001', 'sz399006', 'sh000680', 'sh000688', 'sh000300', 'sz399905'}
+# v2.360 (用户 m38512): 登记表全集 —— 含候选指数(同花顺全A/中证1000/中证全指/上证50)
+#   与特色指标分母(中证红利)。它们都要走指数通路, 不能落到个股分支。
+INDEX_CODES = set(_idxr.BAR_CODES)
 
 # v2.117 (2026-09-25): 指数**名字**的唯一定义 —— get_market_indices() 与 AI 工具共用。
 # 原先这份 dict 长在 get_market_indices() 函数体里, AI 侧拿不到 ⇒ 用户问「上证指数」
 # 时工具只能回"没找到"。原则同 INDEX_CODES: 一处定义, 不许长出第二份。
-INDEX_NAMES = {
-    'sh000001': '上证指数', 'sz399001': '深证成指',
-    'sz399006': '创业板指', 'sh000688': '科创50',
-    'sh000300': '沪深300', 'sz399905': '中证500',
-    'sh000680': '科创综指',  # v2.57.1 (2026-09-05): 顶栏实时补第7指数
-}
+INDEX_NAMES = {c: _idxr.name_of(c) for c in _idxr.BAR_CODES}
 # 俗称/简写 → 标准指数代码 (模型说"上证"/"创业板"也要能命中)
 INDEX_ALIAS = {
     '上证': 'sh000001', '上证指数': 'sh000001', '上证综指': 'sh000001', '沪指': 'sh000001',
@@ -134,6 +136,10 @@ INDEX_ALIAS = {
     '创业板': 'sz399006', '创业板指': 'sz399006',
     '科创50': 'sh000688', '科创': 'sh000688',
     '沪深300': 'sh000300', '沪深': 'sh000300',
+    # v2.360 (用户 m38439): 顶栏可换进来的候选 + 特色指标分母的俗称
+    '同花顺全A': '883957', '全A': '883957', '同花顺全A(沪深京)': '883957',
+    '中证1000': 'sh000852', '中证全指': 'sh000985', '上证50': 'sh000016',
+    '中证红利': 'sh000922', '红利': 'sh000922',
     '中证500': 'sz399905', '中证': 'sz399905',
     '科创综指': 'sh000680',
 }
@@ -3022,6 +3028,37 @@ def sector_minute(thscode, with_parent=True, timeout=8):
     return lines, date
 
 
+def _ths_minute_points(code):
+    """同花顺自编指数(48_ 前缀)分时 → /api/minute 要的 {points, prev_close, name, date}。
+
+    v2.360 (用户 m38439): 腾讯 minute 不认 883957(同花顺全A), 那条路会抛
+      'could not convert string to float: \'\''。这里把它转成和腾讯完全一样的形状,
+      前端 fetchMinute 一行都不用改。
+    points = [{'t':'HHMM','p':价,'v':增量,'cv':累计}] —— 同花顺分时第 5 段是累计成交量,
+      增量要自己逐点相减(和 fetch_minute 口径一致)。
+    """
+    try:
+        from quant_terminal import ths_index as _ths_i
+        _m = _ths_i.minute(code)
+        if not _m.get('ok'):
+            return None
+        _ts = _m.get('times') or []
+        _ps = _m.get('prices') or []
+        _points = []
+        _prev = 0.0
+        for _i in range(min(len(_ts), len(_ps))):
+            _points.append({'t': str(_ts[_i]), 'p': float(_ps[_i]),
+                            'v': 0.0, 'cv': 0.0})
+        _d = str(_m.get('date') or '')
+        _d = ('%s-%s-%s' % (_d[:4], _d[4:6], _d[6:])) if len(_d) == 8 else _d
+        return {'points': _points, 'prev_close': float(_m.get('pre') or 0),
+                'name': _m.get('name') or _idxr.name_of(code),
+                'date': _d, 'source': 'ths_official'}
+    except Exception as _e:
+        _swlog('ths_minute_points', _e)
+        return None
+
+
 def _tx_line(sc, code, kind, timeout=8):
     """腾讯分时(个股 / 大盘指数) → (line, date)。复用 fetch_minute, 与分时图同一份实现。
 
@@ -3129,12 +3166,33 @@ def mini_minute(kind, code, ttl=_MINI_TTL):
             src = '同花顺官方分时'
             url = _THS_TIME_URL.format(code=_ths_code(code), kind='last')
         elif kind == 'index':
-            # 顶部 7 个大盘指数: 10jqka 不认 sh000001 这类代码, 走腾讯(与分时图同源同口径)
-            _l, date = _tx_line(code if code.lower().startswith(('sh', 'sz', 'bj'))
-                                else ('sh' if code[:1] in '69' else 'sz') + code,
-                                code, kind)
-            lines = [_l]
-            src = '腾讯分时'
+            # v2.360 (用户 m38439): src='ths' 的指数(同花顺全A 883957)走同花顺分时 ——
+            #   腾讯 minute 不认 883957, 走那条会抛 'could not convert string to float'。
+            if _idxr.src_of(code) == 'ths':
+                from quant_terminal import ths_index as _ths_i
+                _mm = _ths_i.minute(code)
+                if not _mm.get('ok'):
+                    raise ValueError(_mm.get('error') or '同花顺分时取不到')
+                _md = str(_mm.get('date') or '')
+                _md = ('%s-%s-%s' % (_md[:4], _md[4:6], _md[6:])) if len(_md) == 8 else _md
+                _l = _line_of('main', {'name': _mm.get('name') or _idxr.name_of(code),
+                                       'pre': _mm.get('pre') or 0,
+                                       'date': _md,
+                                       'times': _mm.get('times') or [],
+                                       'prices': _mm.get('prices') or []},
+                              code, name=_mm.get('name') or _idxr.name_of(code))
+                _l['source'] = 'ths_official'
+                lines = [_l]
+                date = _md
+                src = '同花顺分时'
+                url = 'https://d.10jqka.com.cn/v6/time/48_%s/last.js' % code
+            else:
+                # 其余大盘指数: 10jqka 不认 sh000001 这类代码, 走腾讯(与分时图同源同口径)
+                _l, date = _tx_line(code if code.lower().startswith(('sh', 'sz', 'bj'))
+                                    else ('sh' if code[:1] in '69' else 'sz') + code,
+                                    code, kind)
+                lines = [_l]
+                src = '腾讯分时'
             _mt = ds.get('online', 'minute', {})
             url = str(_mt.get('url_primary')
                       or 'https://ifzq.gtimg.cn/appstock/app/minute/query?code={code}')
@@ -5532,7 +5590,19 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
             elif path == '/api/minute':
                 # 分时图数据 (腾讯分钟接口, 仅当日; 2026-08-06)
                 code = qs.get('code', '000938')
-                if code.lower() in INDEX_CODES:
+                if _idxr.norm(code) in INDEX_CODES and _idxr.src_of(code) == 'ths':
+                    # v2.360: 同花顺全A 腾讯 minute 不认, 走同花顺分时转成同样的 points 形状
+                    # v2.360c: **写完必须 return** —— 这是个终态分支。原版漏了 return,
+                    #   控制流会落到下面的 fetch_minute(sc), 而 sc 在这条路没赋值 ⇒
+                    #   NameError 被 except 吞掉后**又写第二个 JSON** 进同一个响应,
+                    #   客户端 json.loads 直接报 Extra data。
+                    _hm = _ths_minute_points(code)
+                    if _hm:
+                        self._json(_hm)
+                    else:
+                        self._json({'error': '分时数据获取失败'})
+                    return
+                elif code.lower() in INDEX_CODES:
                     sc = code.lower()  # 指数代码直接使用 (2026-08-07)
                 else:
                     # v2.279 (用户 m10425): 北交所要拼 bj, 老判据把 920xxx 当沪市 ⇒ 分时永远空
@@ -5554,6 +5624,10 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                 #   会被砍回 320; 实测同 scale 新浪深度全面胜出 (5分: 22天 vs 15天)。这里只取100根。
                 # 量纲: 新浪返回"股", 终端统一"手" → /100 (9/14 实测 1,657,146股 vs CSV 16,571手)
                 code = qs.get('code', '000938')
+                if _idxr.norm(code) in INDEX_CODES and _idxr.src_of(code) == 'ths':
+                    # v2.360: 新浪 5 分 K 认不了 883957。明确回空 + 原因, 不静默成功。
+                    self._json({'points': [], 'error': '同花顺全A 无 5 分钟K线源'})
+                    return
                 if code.lower() in INDEX_CODES:
                     sc = code.lower()  # 指数代码直接用 (同 /api/minute)
                 else:
@@ -6566,6 +6640,13 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 self._json(_d6)
+
+            elif path == '/api/idx_slots':
+                # v2.360 (用户 m38439): 顶栏两格的候选 + 全表名字, 前端一次拿全。
+                #   为什么放后端: 名字/候选若前端再写一份, 就是第七处硬编码。
+                _sp = _idxr.slots_payload()
+                _sp['ok'] = True
+                self._json(_sp)
 
             elif path == '/api/idx_meta':
                 """v2.359: 单只指数的本地存档概况（行数/起止日/文件 mtime），不联网。"""
