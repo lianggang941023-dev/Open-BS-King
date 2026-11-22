@@ -1,0 +1,9 @@
+# 打赏 / 赞助渠道
+#
+# 微信赞赏码图片在 README 的「九、支持这个项目」一节；
+# 也可以在终端里点右上角 ⚙ 设置 → 支持这个项目 → 点二维码放大。
+#
+# 说明：本项目只接受纯自愿的微信赞赏，不提供付费功能、不接商业定制。
+# 没有配置 github: / patreon: 等字段，是因为 GitHub Sponsors 目前
+# 不支持中国大陆个人账户直接提现，配了也用不上。
+custom: ["https://github.com/lianggang941023-dev/Open-BS-King/blob/main/README.md#%E4%B9%9D%E6%94%AF%E6%8C%81%E8%BF%99%E4%B8%AA%E9%A1%B9%E7%9B%AE"]
