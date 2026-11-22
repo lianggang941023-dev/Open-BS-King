@@ -7714,8 +7714,7 @@ async function renderDSWin(){
     +(_miss.cached===undefined?'--':_miss.cached)+' 条</div>'
     +'<div style="margin-top:3px"><label style="color:var(--tx2);cursor:pointer">'
     +'<input type="checkbox" id="ds-mini-split"'+(MINI_SPLIT?' checked':'')+' onchange="miniSplitSet(this.checked)"> '
-    +'分时浮窗按左右半屏选贴靠方向</label> <span style="color:var(--tx3)">'
-    +'光标在原浮窗所在的左半屏 → 分时图放它右边; 在右半屏 → 放它左边。关掉=一律放原浮窗左边(旧行为, 尺寸变化时可能翻面跳一下)</span></div>'
+    +'分时浮窗按左右半屏选贴靠方向</label></div>'
     +'</div>','mini_minute');
   h+=dsRow('分时图','当日分时 (主备两个域名自动切换)',
     '<input id="ds-m-1" style="width:240px;font-size:9px" value="'+escAttr(c.minute.url_primary)+'"><br>'
@@ -7751,11 +7750,6 @@ async function renderDSWin(){
     +'value="'+escAttr(_fq.key||'')+'" placeholder="粘贴 Key (已填过则显示 ******)"> '
     +'<span style="font-size:9px">'+_fqState+'</span>',
     'fuyao', 'https://fuyao.aicubes.cn/');
-  h+='<div style="color:var(--tx3);font-size:9px;padding:2px 0 0 96px;line-height:13px">'
-    +'限流/失败会写 <b>quant_terminal/fuyao_fetch.log</b> (轮换刷新另写 <b>quote_cycle.log</b>), '
-    +'事后能查是哪一家、哪一刻被限的。'
-    +' 不勾「启用」或 Key 留空 = 自动退回通达信老路, 只是 11:31 会重新开始花积分。'
-    +'</div>';
   // v2.153 (2026-10-18): 通达信 tdx-aidata (付费·补充字段)
   //   ⚠ 它**不是**实时行情的替代品 —— 实测价格四字段与本地 100% 相同, 成交量还是
   //     floor(股/100) 截断(40% 的票少 0~1 手)。它真正补的是**本地没有的实时扩展字段**:
@@ -7778,20 +7772,12 @@ async function renderDSWin(){
     +'value="'+escAttr(_tdx.key||'')+'" placeholder="粘贴 Key (已填过则显示 ******)"> '
     +'<span style="font-size:9px">'+_tkState+'</span>',
     'tdx', 'https://vip.tdx.com.cn/site/app/pc-mall/main.html#/');
-  h+='<div style="color:var(--tx3);font-size:9px;padding:2px 0 0 96px;line-height:13px">'
-    +'Key 存在 <b>'+escAttr(_ts.ini_dir||'tdx/lib/tdxaidata/lib')+'</b> 下的 TdxAiData.ini: '
-    +'<b>原样不动 = 不修改</b>, 清空也<b>不会</b>清除已存的 Key。'
-    +' 填了新 Key 点「保存」即写进 ini 并生效 (<b>无需重启</b>)。'
-    +'</div>';
   // v2.164 (2026-10-20 用户 m21624 批准): 本地调用审计账 —— 就放在通达信这一行下面
   h+='<div style="font-size:9px;padding:2px 0 0 96px;line-height:14px">'
     +'<a href="javascript:dsTdxCalls()" style="color:var(--cyan)">📋 本地调用审计账</a>'
-    +' <span style="color:var(--tx3)">(每次真实运行调了几次接口、谁触发的 —— 用来对通达信账单; 只读不花钱)</span>'
     +'<div id="tdx-calls-out" style="display:none;margin-top:3px;padding:4px 6px;background:var(--bg2);'
     +'border:1px solid var(--bd);border-radius:3px;color:var(--tx2);font-size:9px;line-height:14px;'
     +'max-height:220px;overflow:auto;white-space:pre-wrap"></div></div>';
-  h+='<div style="color:var(--tx3);font-size:9px;padding:2px 0 0 96px;line-height:13px">'
-    +'⚠ 这个源<b>不参与</b>本地K线写入 —— 你的K线仍是腾讯/新浪那一套; 通达信只做补充查询。</div>';
   // v2.165 (2026-10-20 用户 m22000 定案): 取消勾选 = 四个时点**静默暂停**。
   //   这句话必须紧挨着勾选框 —— 勾掉的那一刻就得知道代价是「今天 K 线不会自己更新」,
   //   而不是等到收盘后才发现 15:31 什么都没干。
@@ -7802,7 +7788,6 @@ async function renderDSWin(){
       +'要恢复, 勾上「启用」并点「保存」。<br>'
       +'手动按钮不受影响: 「⚡ 快照更新」走同花顺 (免费), 「🔄 板块更新」读本地K线。</div>';
   }
-  h+='<div style="color:var(--tx3);font-size:9px;padding:2px 0 0 96px">禁用源: 东财push2 / AKShare个股+行业API (被封, 不提供选项)</div>';
   h+=dsSec('🗄 本地数据源');
   // v2.1 (2026-08-29): 8项重做 — 路径 = 电脑中完整路径; 快照/模式池子 = 多文件可增删
   h+=dsRow('1. 本地历史K线','前复权日K, 选股/复盘唯一权威 (目录)',
@@ -7811,8 +7796,6 @@ async function renderDSWin(){
   //   取价改同花顺 fuyao, 板块成分股改每日自动增量修正, 导出快照体系整体退场。
   h+=dsRow('2. 涨停史文件','龙头战法妖性评分',
     '<input id="ds-l-limit_history" style="width:340px;font-size:9px" value="'+escAttr(l.limit_history)+'">','local.limit_history');
-  h+='<div style="padding:4px 0 2px;color:var(--tx3);font-size:9px;border-top:1px solid var(--bd);margin-top:4px">'
-    +'🔒 行业/概念映射 (industry_map.csv / concept_map.csv): 只读 — 唯一入口=每日「更新板块」前自动做的成分股增量修正 (同花顺 fuyao)</div>';
   // v2.215 (2026-10-24 用户 m06690): 删掉「龙虎榜/公告/新闻/财务(扩展)由 cn-financial 提供 ...」整段说明
   // v2.112: 🤖 AI 分析段。
   // ⚠ 这里拿到的是 **masked** 配置 —— 已保存的 key 回显成 ******, 原样不动地保存回去
@@ -7842,14 +7825,7 @@ async function renderDSWin(){
     'ai.backup', dsAiKeyUrl(ab.name, ab.base));
   h+='<div style="padding:4px 0 0 96px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
     +'<button class="btn sm" onclick="dsSwapAI()" style="font-size:9px" '
-    +'title="两行整体对调 (含各自的 API Key) 并立即保存">⇅ 主备互换</button>'
-    +'<span style="color:var(--tx3);font-size:9px">主源能通就轮不到备源 —— 想让备的那家当主力, 点这里, 不用重填</span></div>';
-  h+='<div style="color:var(--tx3);font-size:9px;padding:2px 0 0 96px;line-height:13px">'
-    +'Key 留空时的回退链: 环境变量 <b>AI_PRIMARY_KEY</b> / <b>AI_BACKUP_KEY</b> → '
-    +'<b>~/.modlens/config.json</b> 里<b>同域名</b>的 key (所以智谱这栏不填也能直接用)。<br>'
-    +'已保存的 Key 回显为 <b>******</b>: <b>原样不动 = 不修改</b>。'
-    +'界面<b>无法清除</b>已存的 Key (清空 = 视为未修改), 要清除请直接改 data_sources.json。<br>'
-    +'「测试」走的是<b>已保存</b>的配置 —— 先点下面的「保存」, 再测。</div>';
+    +'title="两行整体对调 (含各自的 API Key) 并立即保存">⇅ 主备互换</button></div>';
   h+='<div style="display:flex;gap:6px;padding:6px 0 2px">'
     +'<button class="btn sm" onclick="dsTestAll()" style="font-size:9px">测试全部</button>'
     +'<button class="btn go" onclick="dsSave()" style="font-size:9px">保存 (即时生效)</button>'
@@ -7882,14 +7858,13 @@ async function renderDSWin(){
     +'<span style="color:var(--gold);font-weight:600">支持这个项目</span>'
     +'<span style="color:var(--tx3);font-size:9px">完全自愿 · 不解锁任何功能</span>'
     +'</div>'
-    +'<div style="display:flex;gap:10px;align-items:flex-start">'
-    +'<div style="flex:1;font-size:9px;color:var(--tx2);line-height:16px">'
-    +'这个终端从数据抓取到界面都是一点点磨出来的，全部开源免费。<br>'
-    +'如果它对你的看盘有帮助，欢迎扫右侧赞赏码请作者喝杯咖啡。<br>'
-    +'<span style="color:var(--tx3)">打赏不会解锁任何功能，也没法换取任何东西。</span>'
+    +'<div style="display:flex;gap:10px;align-items:center">'
+    +'<div style="flex:1;font-size:9px;color:var(--tx2);line-height:15px">'
+    +'如果它对你的看盘有帮助，欢迎扫码请作者喝杯咖啡。'
+    +'<span style="color:var(--tx3)">完全自愿，不解锁任何功能。</span>'
     +'</div>'
     +'<div onclick="dntOpen()" title="点击放大" '
-    +'style="width:96px;height:96px;flex:none;background:#fff;border:1px solid var(--bd2);'
+    +'style="width:72px;height:72px;flex:none;background:#fff;border:1px solid var(--bd2);'
     +'border-radius:4px;padding:3px;cursor:zoom-in;display:flex;align-items:center;justify-content:center">'
     +'<img src="'+DNT_QR+'" alt="微信赞赏码" draggable="false" '
     +'style="width:100%;height:100%;object-fit:contain;display:block">'
