@@ -113,6 +113,7 @@ from quant_terminal import yuntu as _yt
 from quant_terminal import idx_store as _ids
 from quant_terminal import equity_bond as _eb   # v2.369 股债利差
 from quant_terminal import etf_src as _etf      # v2.367: 5 只沪深300ETF + 头部占比指标
+from quant_terminal import pe_ratio as _pr      # v2.370 市盈率走势图（复刻乐咕 hs300-ttm-lyr）
 # v2.360 (2026-11-21 用户 m38439): 指数登记表 —— 全仓唯一一份。
 #   原先 INDEX_CODES / INDEX_NAMES 各写死七码, 用户要求「顶栏两格可右键换指数」后
 #   候选指数(同花顺全A/中证1000/中证全指/上证50)必须也能走指数通路, 否则点进去
@@ -6705,6 +6706,67 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                         pass
                 self._json(_d7)
 
+            elif path == '/api/pe_ratio':
+                """v2.370 (用户 m41587): 市盈率走势图 —— 复刻 legulegu.com/stockdata/hs300-ttm-lyr。
+
+                六条线（三条算法 × 静态/滚动两族）：
+                  · 等权PE      = mean(PE)，只取 PE>0 且 **PE<=300**（乐咕的截尾规则，
+                                  直接全平均会高 6.97；见 pe_ratio 模块 docstring）
+                  · 整体法PE    = Σ总市值 ÷ Σ(总市值/PE)，只取 PE>0（真正的市值加权）
+                  · 中位数PE    = median(PE)，只取 PE>0
+                  · 百分位      = 当前值在**全部历史**中的分位（0~1），与乐咕 ttmPeQuantile 同义
+
+                参数:
+                  code=000300|000016|000905|000852|000001|399001|399006|000688|000015|000922|000985
+                  src=day|csi|lg_month|lg_week   指定数据源；不给则自动挑最长的
+                       day     = 东财成分股+全市场估值自算日频（**2018-01-02 起**）
+                       csi     = 中证官网 peg（**2013-01-01 起**，只有一条整体法线，
+                                 深市 399 开头中证不提供）
+                       lg_month/lg_week = 乐咕月/周频（2005 起，15 字段含官方百分位；
+                                 **站点 2026-11-22 起 504，抓不到就自动跳过**）
+                  limit=N     只留最后 N 个点
+                  mode=meta      只回覆盖矩阵（每只指数有哪些源、多少行），不返回序列
+                  mode=overview  左列列表（含末值）
+                  mode=sync      同步源表（会联网；deep=1 时自算日频按逐日全量回补≈5 分钟/指数）
+
+                数据来源与口径差异见 quant_terminal/pe_ratio.py 的模块 docstring。
+                """
+                _pm = (qs.get('mode', '') or '').strip().lower()
+                if _pm == 'meta':
+                    self._json(_pr.meta())
+                    return
+                if _pm == 'overview':
+                    self._json(_pr.overview())
+                    return
+                if _pm == 'sync':
+                    try:
+                        _pcs = (qs.get('codes', '') or '').strip()
+                        _plist = [x for x in _pcs.split(',') if x] or None
+                        _pd = bool((qs.get('deep', '') or '') in ('1', 'true', 'yes'))
+                        _ps = _pr.sync(_plist, deep=_pd)
+                        self._json({'ok': True, 'sync': _ps})
+                    except Exception as _e5:
+                        _swlog('pe_ratio_sync', _e5)
+                        self._json({'ok': False, 'error': '同步失败: %r' % (_e5,)})
+                    return
+                try:
+                    _pc = (qs.get('code', '') or '000300').strip()
+                    _psrc = (qs.get('src', '') or '').strip() or None
+                    try:
+                        _plim = int(qs.get('limit', '0') or 0)
+                    except (TypeError, ValueError):
+                        _plim = 0
+                    _d8 = _pr.series(_pc, _psrc, _plim)
+                except Exception as _e6:
+                    _swlog('pe_ratio', _e6)
+                    _d8 = {'ok': False, 'error': '市盈率序列计算失败: %r' % (_e6,)}
+                if _d8.get('ok'):
+                    try:
+                        _arc.save_window('pe_ratio', _d8)
+                    except Exception:
+                        pass
+                self._json(_d8)
+
             elif path == '/api/idx_meta':
                 """v2.359: 单只指数的本地存档概况（行数/起止日/文件 mtime），不联网。"""
                 _c = (qs.get('code', '') or '').strip().lower()
@@ -9677,6 +9739,12 @@ if __name__ == '__main__':
             _eb.snapshot_today()
         except Exception as _e3:
             _swlog('idx_eb_warm', _e3)
+        # v2.370: 市盈率走势图 —— 只刷当日增量(backfill 起点=今天), 不整表重拉;
+        #   全量日频回补由 GET /api/pe_ratio?mode=sync&deep=1 手动触发(≈5 分钟/指数)。
+        try:
+            _pr.snapshot_today()
+        except Exception as _e4:
+            _swlog('pe_ratio_warm', _e4)
         return '%d 只/%s/%s' % (len(_done), _syn, _sn)
 
     def _idx_auto_sync(blocking=False):

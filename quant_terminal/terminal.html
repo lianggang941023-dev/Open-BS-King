@@ -19283,6 +19283,7 @@ window.ldrLhbPick = ldrLhbPick; window.ldrLhbInst = ldrLhbInst; window.ldrLhbDep
         <span id="idxp-title" style="font-size:12px;font-weight:700;color:var(--gold)"></span>
         <span id="idxp-sub" style="font-size:10px;color:var(--tx2)"></span>
         <span id="idxp-eb-tabs" style="display:none;align-items:center;gap:4px;margin-left:8px"></span>
+        <span id="idxp-pe-tabs" style="display:none;align-items:center;gap:3px;margin-left:8px;flex-wrap:wrap"></span>
         <span style="flex:1"></span>
         <span id="idxp-msg" style="font-size:10px;color:var(--tx2)"></span>
       </div>
@@ -20082,6 +20083,80 @@ var IDXP_EB_OK = {'000300': ['pe', 'dvttm', 'dv'], '000016': ['pe'], '000905': [
 var IDXP_EB_FLBL = {'pe': '1/市盈率', 'dvttm': '等权股息率TTM', 'dv': '静态股息率'};
 var IDXP_EB_FLBL_S = {'pe': 'PE', 'dvttm': '股息TTM', 'dv': '静态股息'};
 var IDXP_EB_MLBL = {30: '2.5年', 36: '3年', 60: '5年'};
+/* ══════════════════════════════════════════════════════════════════════════════
+   v2.370 (2026-11-22 用户 m41587 / m41681): 特色指标第 6 项 ——「市盈率走势图」
+
+   用户截图是乐咕 /stockdata/hs300-ttm-lyr，六条线：
+     指数(红, 右轴) / 等权滚动市盈率 / 滚动市盈率 / 滚动市盈率中位数
+     / 滚动市盈率百分位 / 滚动市盈率中位数百分位。
+   用户 m41681 补充：「还有创业板，科创板，红利，上证，深证等不同范围的市盈率变化曲线图」。
+
+   三条线的口径（与乐咕逐位对拍通过，见 pe_ratio.py docstring）：
+     滚动市盈率   = 整体法  Σ总市值 ÷ Σ(总市值/PE_TTM)，只算 PE>0
+     等权滚动PE   = mean(PE_TTM)，只算 0<PE<=300（乐咕做截尾，300 是实测最贴近的截断）
+     滚动PE中位数 = median(PE_TTM)，只算 PE>0
+   百分位 = 该值在**全部历史**中的分位（0~1），乐咕直接给、自算整表重算。
+
+   三种数据源（后端在 src/src_lbl 里标明，前端副标题照实显示，不让用户猜）：
+     乐咕月频 2005 起（只有沪深300 等 4 个指数，且 legulegu.com 常挂）
+     中证官方 2013 起单线（深市 399 开头中证不提供）
+     东财自算 2018 起六条线（任何指数都能算）
+   ══════════════════════════════════════════════════════════════════════════════ */
+var IDXP_PE_PRE = '\u5e02\u76c8\u7387\u00b7';
+var IDXP_PE = [
+  {code: '000300', name: '\u6caa\u6df1300'},
+  {code: '000016', name: '\u4e0a\u8bc150'},
+  {code: '000905', name: '\u4e2d\u8bc1500'},
+  {code: '000852', name: '\u4e2d\u8bc11000'},
+  {code: '000001', name: '\u4e0a\u8bc1\u7efc\u6307'},
+  {code: '399001', name: '\u6df1\u8bc1\u6210\u6307'},
+  {code: '399006', name: '\u521b\u4e1a\u677f\u6307'},
+  {code: '000688', name: '\u79d1\u521b50'},
+  {code: '000015', name: '\u7ea2\u5229\u6307\u6570'},
+  {code: '000922', name: '\u4e2d\u8bc1\u7ea2\u5229'},
+  {code: '000985', name: '\u4e2d\u8bc1\u5168\u6307'}
+];
+var IDXP_PE_LBL = {
+  ttmPe: '\u7b49\u6743\u6eda\u52a8\u5e02\u76c8\u7387',
+  addTtmPe: '\u6eda\u52a8\u5e02\u76c8\u7387',
+  middleTtmPe: '\u6eda\u52a8\u5e02\u76c8\u7387\u4e2d\u4f4d\u6570',
+  lyrPe: '\u7b49\u6743\u9759\u6001\u5e02\u76c8\u7387',
+  addLyrPe: '\u9759\u6001\u5e02\u76c8\u7387',
+  middleLyrPe: '\u9759\u6001\u5e02\u76c8\u7387\u4e2d\u4f4d\u6570',
+  peg: '\u6eda\u52a8\u5e02\u76c8\u7387(\u4e2d\u8bc1)'
+};
+var idxpPeSt = {
+  code: '000300',
+  on: {ttmPe: true, addTtmPe: true, middleTtmPe: true,
+       lyrPe: false, addLyrPe: false, middleLyrPe: false,
+       /* v2.370b: 中证单线源(科创50/红利指数)的线 key 是 peg —— 不放进这个表,
+          画图循环那行开关判据会把它跳过, 结果图上只剩指数红线、一条 PE 都没有
+          (实测科创50 nSeries=1)。注意注释里**别再抄那行判据原文**,
+          否则自检数旧写法时会多算一次(v2.351j/2.353c/2.356/2.365b 四次踩过)。 */
+       peg: true},
+  src: '',              /* v2.370b: 当前这档实际用的源, 决定勾选条画哪一排 */
+  pctMode: false,       /* false = 画 PE 值, true = 画百分位(0~100%) */
+  ov: null,             /* /api/pe_ratio?mode=overview 的结果, 用来在左列小字里写源与范围 */
+  loading: false, seq: 0, want: ''
+};
+function idxpPeCodeOf(label){
+  if(!label) return '';
+  var s = String(label);
+  if(s.indexOf(IDXP_PE_PRE) !== 0) return '';
+  var nm = s.slice(IDXP_PE_PRE.length);
+  for(var i = 0; i < IDXP_PE.length; i++){ if(IDXP_PE[i].name === nm) return IDXP_PE[i].code; }
+  return '';
+}
+function idxpPeLbl(code){
+  for(var i = 0; i < IDXP_PE.length; i++){ if(IDXP_PE[i].code === code) return IDXP_PE_PRE + IDXP_PE[i].name; }
+  return IDXP_PE_PRE + code;
+}
+function idxpPeOvRow(code){
+  var ov = idxpPeSt.ov; if(!ov || !(ov.rows || []).length) return null;
+  for(var i = 0; i < ov.rows.length; i++){ if(ov.rows[i].code === code) return ov.rows[i]; }
+  return null;
+}
+
 var idxpEbSt = {code: '000300', formula: 'pe', ma: 30, ov: null, loading: false,
                want: '', seq: 0};
 
@@ -20194,6 +20269,31 @@ function idxpPaintList(){
       +  it.name + '</div>';
     h += '<div style="font-size:9px;color:var(--tx3);padding:0 0 4px 9px;white-space:nowrap">'
       +  it.note + '</div>';
+  }
+  /* v2.370: 第 6 段 —— 市盈率走势图(11 个标的)。与上面几段同一套视觉。 */
+  h += '<div style="height:1px;background:var(--c-line,rgba(255,255,255,0.08));margin:5px 2px 4px"></div>';
+  h += '<div style="font-size:9px;color:var(--tx3);padding:0 0 3px 2px;letter-spacing:.5px">市盈率走势图</div>';
+  for(var q = 0; q < IDXP_PE.length; q++){
+    var qi = IDXP_PE[q], qlbl = IDXP_PE_PRE + qi.name;
+    var onQ = (idxpSt.cur === qlbl);
+    var qr = idxpPeOvRow(qi.code);
+    var qnote = '点击加载';
+    if(qr && qr.best){
+      var qs = qr.srcs[qr.best] || {};
+      qnote = (qs.start ? ('从 ' + qs.start) : '') + ' · ' + (qr.best_lbl || '');
+    }
+    h += '<div onclick="idxPairPick(\'' + qlbl + '\')" '
+      +  'style="padding:5px 7px;border-radius:3px;cursor:' + (onQ ? 'default' : 'pointer') + ';'
+      +  'border-left:2px solid ' + (onQ ? 'var(--gold)' : 'transparent') + ';'
+      +  'background:' + (onQ ? 'rgba(240,192,64,0.12)' : 'transparent') + ';'
+      +  'color:' + (onQ ? 'var(--gold)' : 'var(--tx1)') + ';font-size:11px;white-space:nowrap;'
+      +  'overflow:hidden;text-overflow:ellipsis" '
+      +  'title="' + qlbl + ' —— 整体法/等权/中位数 三类市盈率与百分位; 左轴 PE, 右轴指数"'
+      +  (onQ ? '' : ' onmouseover="this.style.background=\'rgba(255,255,255,0.05)\'"'
+                + ' onmouseout="this.style.background=\'transparent\'"') + '>'
+      +  qi.name + '</div>';
+    h += '<div style="font-size:9px;color:var(--tx3);padding:0 0 4px 9px;white-space:nowrap">'
+      +  qnote + '</div>';
   }
   box.innerHTML = h;
 }
@@ -20472,6 +20572,22 @@ async function idxPairLoad(label){
   }
 }
 
+/* v2.370d: 左列 11 项的小字(「从 2005-04-29 · 乐咕月频」)靠 `idxpPeSt.ov` 渲染，
+   而它原来只声明过、从没赋值 —— `/api/pe_ratio?mode=overview` 一次都没调过，
+   所以 11 行永远显示「点击加载」。这里补一次(后端 43ms，只在进页时拉一遍)。 */
+async function idxpPeLoadOv(){
+  if(idxpPeSt.ovLoading) return;
+  idxpPeSt.ovLoading = true;
+  try{
+    var d = await api('/api/pe_ratio?mode=overview');
+    if(d && d.ok && (d.rows || []).length){
+      idxpPeSt.ov = d;
+      idxpPaintList();          /* 小字跟着刷新，不必重画图 */
+    }
+  }catch(e){}
+  idxpPeSt.ovLoading = false;
+}
+
 async function idxPairLoadMeta(){
   try{
     var d = await api('/api/idx_pairs');
@@ -20484,9 +20600,11 @@ async function idxPairLoadMeta(){
   }
   if(saved === IDXP_HEAD_LBL) has = true;          /* v2.367: 第 4 项也能被记住 */
   if(idxpEbCodeOf(saved)) has = true;             /* v2.369: 股债利差三项也能被记住 */
+  if(idxpPeCodeOf(saved)) has = true;             /* v2.370: 市盈率 11 项也能被记住 */
   if(!has && (idxpSt.pairs || []).length) saved = idxpSt.pairs[0].label;
   idxpSt.cur = saved;
   idxpPaintList();
+  idxpPeLoadOv();          /* v2.370d: 左列市盈率那 11 行的小字要它，不等、失败也不阻塞 */
   return saved;
 }
 
@@ -20496,6 +20614,7 @@ async function idxPairLoadMeta(){
    现在与「市场总览/连板梯队/龙虎榜/行业板块」同一套范式: 先画存档, 再拉真数据覆盖。 */
 async function idxPairArchiveFirst(){
   if(idxpEbCodeOf(idxpSt.cur)) return await idxpEbArchiveFirst();   /* v2.369 */
+  if(idxpPeCodeOf(idxpSt.cur)) return await idxpPeArchiveFirst();   /* v2.370 */
   var nm = (idxpSt.cur === IDXP_HEAD_LBL) ? 'idx_head' : 'idx_pair';
   try{
     var s = await api('/api/snapshot?name=' + encodeURIComponent(nm));
@@ -20536,16 +20655,246 @@ async function idxPairEnter(){
     if(!idxpSt.c1){ await idxPairArchiveFirst(); }
     if(k === IDXP_HEAD_LBL) idxPairLoadHead();
     else if(idxpEbCodeOf(k)) idxPairLoadEb();
+    else if(idxpPeCodeOf(k)){ idxpPeSt.code = idxpPeCodeOf(k); idxpPePaintTabs(); idxPairLoadPe(); }
     else if(k) idxPairLoad(k);
   }else if(!idxpSt.c1){
     idxpPaintList();
     await idxPairArchiveFirst();
     if(idxpSt.cur === IDXP_HEAD_LBL) idxPairLoadHead();
     else if(idxpEbCodeOf(idxpSt.cur)) idxPairLoadEb();
+    else if(idxpPeCodeOf(idxpSt.cur)){ idxpPeSt.code = idxpPeCodeOf(idxpSt.cur); idxpPePaintTabs(); idxPairLoadPe(); }
     else if(idxpSt.cur) idxPairLoad(idxpSt.cur);
   }else{
     idxpSt.c1.resize(); idxpSt.c2 && idxpSt.c2.resize();
   }
+}
+
+/* ── v2.370 市盈率走势图：勾选条 ───────────────────────────────────────────
+   乐咕那张图顶部是一排图例复选框；这里做成同一排小胶囊，点一下开关一条线。
+   「百分位」是整体模式开关(切换左轴 0~100%)，不是某一条线。 */
+function idxpPePaintTabs(){
+  var box = $('idxp-pe-tabs'); if(!box) return;
+  if(!idxpPeCodeOf(idxpSt.cur)){ box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = 'flex';
+  if(typeof readTheme === 'function'){ try{ readTheme(); }catch(e){} }
+  var TH2 = (typeof TH === 'object' && TH) ? TH : {};
+  var light = (typeof themeIsLight === 'function') ? themeIsLight() : false;
+  var COLS = {
+    ttmPe: light ? '#1f6feb' : '#4f9dff',
+    addTtmPe: TH2.up || '#f04050',
+    middleTtmPe: light ? '#0e8f6f' : '#2ee6a8',
+    lyrPe: light ? '#7a4bd0' : '#b07cff',
+    addLyrPe: TH2.gold || '#f0c040',
+    middleLyrPe: TH2.tx2 || '#8a8a9a',
+    peg: TH2.up || '#f04050'
+  };
+  /* v2.370b: 中证源只有一条 peg 线(整体法滚动 PE), 画六颗胶囊没有意义 */
+  var KEYS = (idxpPeSt.src === 'csi')
+    ? ['peg']
+    : ['ttmPe', 'addTtmPe', 'middleTtmPe', 'lyrPe', 'addLyrPe', 'middleLyrPe'];
+  var h = '';
+  function pil(txt, on, c, dis, onclick, tip){
+    return '<span onclick="' + (dis ? '' : onclick) + '" '
+      +  'style="display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:2px;'
+      +  'font-size:9px;cursor:' + (dis ? 'not-allowed' : 'pointer') + ';'
+      +  'opacity:' + (dis ? '0.4' : '1') + ';'
+      +  'border:1px solid ' + (on ? c : 'transparent') + ';'
+      +  'background:' + (on ? 'rgba(255,255,255,0.06)' : 'transparent') + ';'
+      +  'color:' + (on ? c : 'var(--tx3)') + '" title="' + (tip || txt) + '">'
+      +  '<b style="font-size:8px">' + (on ? '\u25cf' : '\u25cb') + '</b>' + txt + '</span>';
+  }
+  h += pil('\u767e\u5206\u4f4d', !!idxpPeSt.pctMode, TH2.gold || '#f0c040', false,
+           "idxpPeToggle('__pct__')", '\u5207\u6362\u5de6\u8f74\uff1aPE \u503c \u2194 \u5386\u53f2\u767e\u5206\u4f4d(0~100%)');
+  h += '<span style="width:1px;height:10px;background:var(--c-line,rgba(255,255,255,0.12))"></span>';
+  for(var i = 0; i < KEYS.length; i++){
+    var k = KEYS[i];
+    h += pil(IDXP_PE_LBL[k], !!idxpPeSt.on[k], COLS[k], false,
+             "idxpPeToggle('" + k + "')",
+             IDXP_PE_LBL[k] + ' \u2014\u2014 \u70b9\u4e00\u4e0b\u5f00\u5173\u8fd9\u6761\u7ebf');
+  }
+  box.innerHTML = h;
+}
+function idxpPeToggle(k){
+  if(k === '__pct__'){ idxpPeSt.pctMode = !idxpPeSt.pctMode; }
+  else { idxpPeSt.on[k] = !idxpPeSt.on[k]; }
+  idxpPePaintTabs();
+  if(idxpSt.cur && idxpPeCodeOf(idxpSt.cur)) idxPairLoadPe(true);
+}
+
+/* ── v2.370 市盈率走势图：画图 ─────────────────────────────────────────────
+   一张图、双轴：左轴 PE(或百分位)，右轴指数收盘(红线，与乐咕一致)。
+   乐咕把百分位画成独立的两条线(灰色禁用是因为免费档不给)；我们自算有全历史，
+   所以改成「模式开关」—— 打开就整个左轴换成百分位，比塞六条互相量级不同的线清楚。 */
+function idxpDrawPe(d){
+  var box1 = $('idxp-chart1');
+  if(!box1 || !d || !d.ok || !(d.dates || []).length) return;
+  idxpSetTwoPane(false);
+  if(typeof readTheme === 'function'){ try{ readTheme(); }catch(e){} }
+  var TH2 = (typeof TH === 'object' && TH) ? TH : {};
+  var light = (typeof themeIsLight === 'function') ? themeIsLight() : false;
+  var cIdx = TH2.up || '#f04050';
+  var cTx2 = TH2.tx2 || '#8a8a9a';
+  var cSplit = TH2.split || 'rgba(255,255,255,0.06)';
+  var pct = !!idxpPeSt.pctMode;
+  var COLS = {
+    ttmPe: light ? '#1f6feb' : '#4f9dff',
+    addTtmPe: cIdx,
+    middleTtmPe: light ? '#0e8f6f' : '#2ee6a8',
+    lyrPe: light ? '#7a4bd0' : '#b07cff',
+    addLyrPe: TH2.gold || '#f0c040',
+    middleLyrPe: cTx2,
+    peg: cIdx
+  };
+
+  var dates = d.dates || [], cl = d.close || [];
+  var series = [], legend = [], lastTxt = [];
+  var srcLines = (d.lines || []), srcPct = (d.pct || []);
+  for(var i = 0; i < srcLines.length; i++){
+    var ln = srcLines[i], k = ln.key;
+    if(!idxpPeSt.on[k]) continue;
+    var vs = ln.values || [];
+    if(pct){
+      var pp = null;
+      for(var j = 0; j < srcPct.length; j++){ if(srcPct[j].key === k){ pp = srcPct[j].values; break; } }
+      if(!pp) continue;
+      vs = (function(arr){ var o = []; for(var t = 0; t < arr.length; t++){ o.push(arr[t] == null ? null : Math.round(arr[t] * 10000) / 100); } return o; })(pp);
+      lastTxt.push({k: k, c: COLS[k], v: vs.length ? vs[vs.length - 1] : null, suf: '%'});
+    }else{
+      lastTxt.push({k: k, c: COLS[k], v: vs.length ? vs[vs.length - 1] : null, suf: ''});
+    }
+    legend.push(IDXP_PE_LBL[k] || k);
+    series.push({name: IDXP_PE_LBL[k] || k, type: 'line', yAxisIndex: 0, data: vs,
+                 showSymbol: false, connectNulls: true, smooth: false,
+                 lineStyle: {width: 1.4, color: COLS[k]}, itemStyle: {color: COLS[k]}});
+  }
+  legend.push(d.name + ' \u6307\u6570');
+  series.push({name: d.name + ' \u6307\u6570', type: 'line', yAxisIndex: 1, data: cl,
+               showSymbol: false, connectNulls: true,
+               lineStyle: {width: 1, color: cIdx, opacity: 0.55}, itemStyle: {color: cIdx}, z: 1});
+
+  if(idxpSt.c1){ try{ idxpSt.c1.dispose(); }catch(e){} idxpSt.c1 = null; }
+  box1.innerHTML = '';
+  idxpSt.c1 = echarts.init(box1);
+  idxpSt.c1.setOption({
+    animation: false,
+    backgroundColor: 'transparent',
+    legend: {show: true, top: 1, left: 'center', itemGap: 10, itemWidth: 12, itemHeight: 2,
+             textStyle: {color: cTx2, fontSize: 9}, data: legend},
+    grid: {left: 56, right: 58, top: 26, bottom: 46},
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: {type: 'cross', label: {backgroundColor: 'rgba(60,60,72,0.92)'}},
+      backgroundColor: 'rgba(24,24,30,0.94)',
+      borderColor: 'rgba(255,255,255,0.14)',
+      textStyle: {color: '#e0e0f0', fontSize: 10},
+      formatter: function(ps){
+        if(!ps || !ps.length) return '';
+        var ix = ps[0].dataIndex, o = dates[ix] + '<br/>';
+        for(var t = 0; t < ps.length; t++){
+          var v = ps[t].value;
+          if(v == null) continue;
+          o += '<span style="color:' + (ps[t].color || cTx2) + '">\u25a0</span> '
+            + ps[t].seriesName + ' ' + (+v).toFixed(pct ? 2 : 2)
+            + (pct ? '%' : '') + '<br/>';
+        }
+        return o;
+      }
+    },
+    xAxis: {type: 'category', data: dates, boundaryGap: false,
+            axisLine: {lineStyle: {color: cTx2}},
+            axisLabel: {color: cTx2, fontSize: 9, hideOverlap: true},
+            axisTick: {show: false}},
+    yAxis: [
+      {type: 'value', scale: true, name: pct ? '\u767e\u5206\u4f4d' : 'PE',
+       nameTextStyle: {color: cTx2, fontSize: 9},
+       axisLabel: {color: cTx2, fontSize: 9,
+                   formatter: function(v){ return (+v).toFixed(2) + (pct ? '%' : ''); }},
+       splitLine: {lineStyle: {color: cSplit}}},
+      {type: 'value', scale: true, name: '\u6307\u6570', position: 'right',
+       nameTextStyle: {color: cIdx, fontSize: 9},
+       axisLabel: {color: cIdx, fontSize: 9, formatter: function(v){ return (+v).toFixed(0); }},
+       splitLine: {show: false}}
+    ],
+    dataZoom: [
+      {type: 'inside', xAxisIndex: 0, start: 0, end: 100},
+      {type: 'slider', xAxisIndex: 0, height: 14, bottom: 6,
+       borderColor: cSplit, fillerColor: 'rgba(79,157,255,0.10)',
+       handleStyle: {color: cTx2}, textStyle: {color: cTx2, fontSize: 8},
+       labelFormatter: function(i, v){ return String(v).slice(0, 7); }}
+    ],
+    series: series
+  });
+
+  /* 副标题：源 + 范围 + 每条线的末值（乐咕把读数放右上角，这里放副标题，省一块地方） */
+  var t1 = $('idxp-title'), t2 = $('idxp-sub');
+  if(t1) t1.textContent = IDXP_PE_PRE + (d.name || '');
+  if(t2){
+    var parts = [];
+    for(var z = 0; z < lastTxt.length; z++){
+      var e = lastTxt[z];
+      parts.push((IDXP_PE_LBL[e.k] || e.k) + ' '
+        + (e.v == null ? '--' : (+e.v).toFixed(2) + e.suf));
+    }
+    t2.textContent = (d.name || '') + ' \u00b7 ' + d.n + ' \u4e2a\u70b9 \u00b7 '
+      + d.start + ' ~ ' + d.end + ' \u00b7 ' + (d.src_lbl || d.src || '')
+      + (parts.length ? (' \u00b7 ' + parts.join(' / ')) : '');
+  }
+}
+
+/* ── v2.370 市盈率走势图：拉数据（连点不丢帧，与 v2.369c 同款） ─────────── */
+/* v2.370c: 单飞 + 只要最新目标。
+   原来用 while(true) + seq 自增丢弃过期帧, 但每次 continue 都会再把 seq 顶高一次 ——
+   几颗胶囊几乎同时点下时会有多个循环同时在跑, 每个响应回来都发现
+   _seq 对不上 ⇒ continue ⇒ 又顶高 ⇒ 把别人也作废, 互相追杀、永不收工(活锁)。
+   现在: want 记最新目标, 只允许一个循环在跑, 循环每轮重读 want —— 自然收敛。 */
+async function idxPairLoadPe(force){
+  var code = idxpPeCodeOf(idxpSt.cur) || idxpPeSt.code || '000300';
+  idxpPeSt.code = code;
+  var want = code + '|' + idxpPeSt.pctMode + '|'
+    + Object.keys(idxpPeSt.on).filter(function(k){ return idxpPeSt.on[k]; }).join(',');
+  if(!force && idxpSt.sigPe === want) return;
+  idxpPeSt.want = want;
+  if(idxpPeSt.loading) return;          /* 已有循环在跑, 它自己会追到最新 want */
+  idxpPeSt.loading = true;
+  if(!idxpSt.c1) idxpMsg('\u52a0\u8f7d\u4e2d\u2026');
+  try{
+    while(true){
+      var tgt = idxpPeSt.want;
+      var c2 = idxpPeCodeOf(idxpSt.cur) || idxpPeSt.code || '000300';
+      idxpPeSt.code = c2;
+      var d = null;
+      try{ d = await api('/api/pe_ratio?code=' + c2); }catch(e){ d = null; }
+      if(idxpPeSt.want !== tgt){ continue; }        /* 期间目标又变了 ⇒ 按新目标重拉 */
+      if(!d || d._err || d.ok === false){
+        idxpSt.sigPe = '';
+        idxpMsg((d && (d.error || d._err)) || '\u5e02\u76c8\u7387\u6570\u636e\u53d6\u4e0d\u5230', 'err');
+        return;
+      }
+      idxpSt.sigPe = tgt;
+      idxpPeSt.src = d.src || '';        /* v2.370b: 记住源, 勾选条要按源换排 */
+      idxpDrawPe(d);
+      idxpPePaintTabs();
+      idxpMsg('');
+      if(idxpPeSt.want === tgt) return;             /* 没更新的目标了 ⇒ 收工 */
+    }
+  } finally {
+    idxpPeSt.loading = false;
+  }
+}
+
+/* ── v2.370 市盈率走势图：先读存档秒显（与 v2.368 同一套范式） ───────────── */
+async function idxpPeArchiveFirst(){
+  var want = idxpPeCodeOf(idxpSt.cur) || idxpPeSt.code;
+  try{
+    var s = await api('/api/snapshot?name=pe_ratio');
+    if(!s || !s.ok || !s.payload) return false;
+    var p = s.payload;
+    if(!p.ok || !(p.dates || []).length) return false;
+    if(p.code && p.code !== want) return false;   /* 存档是别的标的，不画错图 */
+    idxpDrawPe(p);
+    idxpMsg('\u5b58\u6863 ' + String(s.saved_at || '').slice(5, 16) + ' \u00b7 \u6b63\u5728\u62c9\u6700\u65b0\u2026');
+    return true;
+  }catch(e){ return false; }
 }
 
 function idxPairPick(label){
@@ -20560,6 +20909,12 @@ function idxPairPick(label){
     idxPairLoadEb();
     return;
   }
+  if(idxpPeCodeOf(label)){                     /* v2.370: 市盈率走势图 */
+    idxpPeSt.code = idxpPeCodeOf(label);
+    idxpPePaintTabs();
+    idxPairLoadPe();
+    return;
+  }
   idxPairLoad(label);
 }
 
@@ -20570,6 +20925,7 @@ function idxPairReload(resize){
   });
   if(idxpSt.cur === IDXP_HEAD_LBL) return idxPairLoadHead();   /* v2.367 */
   if(idxpEbCodeOf(idxpSt.cur)) return idxPairLoadEb(true);     /* v2.369 */
+  if(idxpPeCodeOf(idxpSt.cur)) return idxPairLoadPe(true);     /* v2.370 */
   return idxPairLoad(idxpSt.cur);
 }
 
@@ -21234,6 +21590,9 @@ window.idxpEbFormula = idxpEbFormula;
 window.idxpEbMa = idxpEbMa;
 window.idxpEbSync = idxpEbSync;
 window.idxpEbWhy = idxpEbWhy;
+/* v2.370: 市盈率走势图的勾选胶囊同理必须挂 window */
+window.idxpPeToggle = idxpPeToggle;
+window.idxpPePaintTabs = idxpPePaintTabs;
 /* v2.363c: `window.idxListSetRange = idxListSetRange;` 已删 —— v2.363 把「半年/1年/2年/全部」
    那排区间按钮和它对应的 idxListSetRange() 一起拿掉了，这行导出就成了对**不存在的函数**的引用，
    页面加载即 ReferenceError（不报在界面上，只在控制台，属于「看着没事、其实一直在抛」）。
