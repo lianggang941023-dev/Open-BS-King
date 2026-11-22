@@ -525,12 +525,17 @@ def head_ratio_series(limit=0):
         _dd = _cch['data']
         if limit and len(_dd['dates']) > int(limit):
             _n = int(limit)
-            return {'ok': True, 'code': _dd['code'], 'name': _dd['name'],
-                    'dates': _dd['dates'][-_n:], 'head': _dd['head'][-_n:],
-                    'fcap': _dd['fcap'][-_n:], 'ratio': _dd['ratio'][-_n:],
-                    'n': _n, 'start': _dd['dates'][-_n], 'end': _dd['end'],
-                    'snap_dates': _dd['snap_dates'], 'n_snap': _dd['n_snap'],
-                    'k_now': _dd['k_now']}
+            _r = {'ok': True, 'code': _dd['code'], 'name': _dd['name'],
+                  'dates': _dd['dates'][-_n:], 'head': _dd['head'][-_n:],
+                  'fcap': _dd['fcap'][-_n:], 'ratio': _dd['ratio'][-_n:],
+                  'n': _n, 'start': _dd['dates'][-_n], 'end': _dd['end'],
+                  'snap_dates': _dd['snap_dates'], 'n_snap': _dd['n_snap'],
+                  'k_now': _dd['k_now']}
+            # v2.372: 缓存命中也要带上沪深300 收盘（用户 m42407 要的叠加线）
+            _cl = _dd.get('close')
+            if isinstance(_cl, list) and len(_cl) >= _n:
+                _r['close'] = _cl[-_n:]
+            return _r
         return _dd
     # 先抓一次实时 K 兜底（快照库为空时用；有快照就不会用到它）
     try:
@@ -620,6 +625,7 @@ def head_ratio_series(limit=0):
         return k
 
     dates, heads, fcaps, ratios = [], [], [], []
+    hs_closes = []      # v2.372: 沪深300 每日收盘 —— 前端右上图叠加红线用
     for d in base:
         tot = 0.0
         ok = True
@@ -636,6 +642,7 @@ def head_ratio_series(limit=0):
         if tot <= 0 or fcap <= 0:
             ok = False
         dates.append(d)
+        hs_closes.append(round(c, 3) if c else None)   # v2.372: 沪深300 收盘(叠加线)
         heads.append(round(tot, 2))
         fcaps.append(round(fcap, 2))
         ratios.append(round(tot / fcap * 100.0, 4) if ok else None)
@@ -653,6 +660,7 @@ def head_ratio_series(limit=0):
         _kn = ks[-1][1]
     _out = {'ok': True, 'code': HEAD_CODE, 'name': HEAD_NAME, 'dates': dates,
             'head': heads, 'fcap': fcaps, 'ratio': ratios,
+            'close': hs_closes,
             'n': len(dates), 'start': dates[0] if dates else '',
             'end': dates[-1] if dates else '',
             'snap_dates': sorted(snap_dates),

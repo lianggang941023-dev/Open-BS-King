@@ -20514,6 +20514,8 @@ function idxpDrawHead(d){
   var dates = d.dates || [];
   var head = d.head || [];
   var rt = d.ratio || [];
+  var cl = d.close || [];          /* v2.372: 沪深300 每日收盘(叠加线) */
+  var cUp = TH2.up || '#f04050';
 
   if(idxpSt.c1){ try{ idxpSt.c1.dispose(); }catch(e){} idxpSt.c1 = null; }
   box1.innerHTML = '';
@@ -20534,7 +20536,8 @@ function idxpDrawHead(d){
         return dates[ix] + '<br/><span style="color:' + cDn + '">■</span> 头部规模 '
           + (head[ix] != null ? (+head[ix]).toFixed(2) : '--') + ' 亿<br/>'
           + '<span style="color:' + cGold + '">■</span> 占流通市值 '
-          + (rt[ix] != null ? (+rt[ix]).toFixed(4) : '--') + '%';
+          + (rt[ix] != null ? (+rt[ix]).toFixed(4) : '--') + '%'
+          + (cl[ix] != null ? ('<br/><span style="color:' + cUp + '">■</span> 沪深300 ' + (+cl[ix]).toFixed(2)) : '');
       }
     },
     xAxis: {
@@ -20543,16 +20546,26 @@ function idxpDrawHead(d){
       axisLabel: {color: cTx2, fontSize: 9, hideOverlap: true},
       axisTick: {show: false}
     },
-    yAxis: {
+    yAxis: [{
       type: 'value', scale: true, name: '亿元',
       nameTextStyle: {color: cDn, fontSize: 9},
       axisLabel: {color: cDn, fontSize: 9, formatter: function(v){ return (+v).toFixed(0); }},
       splitLine: {lineStyle: {color: cSplit}}
-    },
+    }, {
+      /* v2.372 (用户 m42407): 右轴 = 沪深300 收盘，叠加一条红线 */
+      type: 'value', scale: true, name: '指数', position: 'right',
+      nameTextStyle: {color: cUp, fontSize: 9},
+      axisLabel: {color: cUp, fontSize: 9, formatter: function(v){ return (+v).toFixed(0); }},
+      splitLine: {show: false}
+    }],
     dataZoom: [{type: 'inside', start: 0, end: 100}],
     series: [{
       name: '头部规模', type: 'line', data: head, showSymbol: false, connectNulls: false,
       lineStyle: {width: 1.3, color: cDn}, itemStyle: {color: cDn}
+    }, {
+      name: '沪深300 收盘', type: 'line', yAxisIndex: 1, data: cl,
+      showSymbol: false, connectNulls: true,
+      lineStyle: {width: 0.9, color: cUp, opacity: 0.55}, itemStyle: {color: cUp}
     }]
   }, true);
 
@@ -20749,8 +20762,24 @@ async function idxPairEnter(){
 /* ── v2.370 市盈率走势图：勾选条 ───────────────────────────────────────────
    乐咕那张图顶部是一排图例复选框；这里做成同一排小胶囊，点一下开关一条线。
    「百分位」是整体模式开关(切换左轴 0~100%)，不是某一条线。 */
+/* v2.372 (用户 m42407): 三套勾选条互斥 —— 之前 idxpEbPaintTabs / idxpPePaintTabs
+   各自只清自己那一条，从市盈率切到股债利差时上一排还带着 display:flex 挂在标题栏右边，
+   两组并排。这里统一按 idxpSt.cur 决定「谁该显示」，其余一律藏掉 + 清空 innerHTML。 */
+function idxpTabSync(){
+  var keep = '';
+  if(typeof idxpEbCodeOf === 'function' && idxpEbCodeOf(idxpSt.cur)) keep = 'idxp-eb-tabs';
+  else if(typeof idxpPeCodeOf === 'function' && idxpPeCodeOf(idxpSt.cur)) keep = 'idxp-pe-tabs';
+  var ids = ['idxp-eb-tabs', 'idxp-pe-tabs'];
+  for(var i = 0; i < ids.length; i++){
+    if(ids[i] === keep) continue;
+    var x = $(ids[i]);
+    if(x){ x.style.display = 'none'; x.innerHTML = ''; }
+  }
+}
+
 function idxpPePaintTabs(){
   var box = $('idxp-pe-tabs'); if(!box) return;
+  idxpTabSync();      /* v2.372: 先让另一套勾选条退场 */
   if(!idxpPeCodeOf(idxpSt.cur)){ box.style.display = 'none'; box.innerHTML = ''; return; }
   box.style.display = 'flex';
   if(typeof readTheme === 'function'){ try{ readTheme(); }catch(e){} }
@@ -21039,6 +21068,7 @@ function idxpEbBtn(txt, on, dis, onclick, tip){
 /* 标题栏那排 tab: 只在「股债利差」被选中时显示 */
 function idxpEbPaintTabs(){
   var box = $('idxp-eb-tabs'); if(!box) return;
+  idxpTabSync();      /* v2.372: 先让另一套勾选条退场 */
   var isEb = !!idxpEbCodeOf(idxpSt.cur);
   if(!isEb){ box.style.display = 'none'; box.innerHTML = ''; return; }
   box.style.display = 'flex';

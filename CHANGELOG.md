@@ -20,6 +20,26 @@
 ---
 
 ---
+## v2.372 — 2026-11-22
+
+特色指标三项修（用户 m42407）。
+
+### ① 「沪深300头部/全流通市值」叠加沪深300收盘价
+后端 `head_ratio_series()` 补 `close` 字段 —— 沪深300 每日收盘本来就在算 `fcap = c * k` 时取过，只是从没吐出来（缓存命中分支也要带，否则第二次点击曲线消失）。前端 `idxpDrawHead()` 上图加第二个 yAxis（左「亿元」右「指数」）+ 收盘价红线 `opacity 0.55`，tooltip 补一行。实测 1668 点，末值 4763.84 亿 / 3954.57 / 0.9876%。
+
+### ② 两套勾选条同时挂出来（真 bug）
+`idxpEbPaintTabs()` 只清 `#idxp-eb-tabs`、`idxpPePaintTabs()` 只清 `#idxp-pe-tabs`，互不知道对方存在；从市盈率切到股债利差时，pe 那排上一轮画的还带着 `display:flex` ⇒ 两组并排。抽 `idxpTabSync()`，两个 PaintTabs 开头都先调，按 `idxpSt.cur` 统一决定谁显示、其余藏掉并清空。
+
+### ③ 股债利差 2 秒 → 63ms
+CLI 直调 `series` 197ms / `overview` 447ms，HTTP 却是 2.0s；换解释器（3.12.10 / 3.12.14）排除环境后，cProfile 定位 94% tottime 在 `series()` 自身。两重真因：
+
+- `series()` 对 5248 个点各做一次「从 i 往回线性比较」的窗口回扫，ma=30 平均每点 610 次 ⇒ 约 320 万次纯 Python 比较；改 `bisect_left(objs, thr, 0, i+1)`（objs 已升序）⇒ ma30 200.9→**13.9ms**、ma60 405.5→**11.8ms**，5248 点 `avg/up/lo` 逐点差 <1e-12，与乐咕末行 `0.061726/0.072172/0.051280` 仍逐位一致。
+- 一次 HTTP 请求要算 4 遍全量序列（`series` 1 遍 + `overview()` 里 3 遍，而 `limit=1` 也是先全算再切尾）；加进程级 `_SER_CACHE`（签名 = 四张源表 csv 的 `mtime_ns:size`，缓存存全量、`_slice_out()` 返回时切尾）⇒ `limit=1` 200ms→**0ms**，`overview` 447→37ms；`sync()` 末尾 `clear_cache()`。
+
+实测 HTTP：`/api/idx_eb?code=000300&formula=pe&ma=30` **2.04s → 63ms（509 KB）**、`ma=60&limit=1` **2.7s → 16ms**、`mode=meta` **1.35s → 9ms**；切换 2.5年/3年/PE/股息TTM 实测 **155/180/170/195ms**；关窗重开首帧 **50ms**。
+
+---
+
 ## v2.371b — 2026-11-22
 
 ### 新功能：重要新闻浮窗折叠（默认只显一张，点按钮向上展开）
