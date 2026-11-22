@@ -280,11 +280,29 @@ body{background:var(--bg0);color:var(--tx1);font-family:var(--mono);font-size:va
    用户定案: 不自动消失 / 左键进 AI 分析 / 右键清掉 / 新的往上叠 / 各自独立。
    ⚠ 层级压在 #news-win (9997) **之下** —— 开新闻窗口时卡片退到后面待着, 不抢视线;
      但必须高于三栏面板 (无 z-index, 走文档流) 才能盖住股票列表。 */
-#news-toast{position:fixed;z-index:9990;display:flex;flex-direction:column-reverse;
+#news-toast{position:fixed;z-index:9990;display:flex;flex-direction:column;
             gap:4px;align-items:stretch;pointer-events:none}
-/* ⚠ column-reverse + 追加到**末尾** = 视觉上**新的在最上面**, 老的被往下挤。
-   这样 JS 只管 appendChild, 不用管插入位置; 而最旧那张恒在 DOM[0] (底部),
-   做"超 8 张淘汰最旧"时直接取 firstChild。 */
+/* v2.371: 外层改成**正序** —— 它现在只装两块: 上面「展开更多」按钮, 下面卡片列表。
+   卡片列表 #nto-list 自己才是 column-reverse + 追加到**末尾** = 视觉上
+   **新的在最上面**, 老的被往下挤; 这样 JS 只管 appendChild, 不用管插入位置;
+   而最旧那张恒在 DOM[0] (列表底部), 做"超 8 张淘汰最旧"时直接取 children[0]。 */
+#news-toast #nto-list{display:flex;flex-direction:column-reverse;gap:4px;
+                      align-items:stretch;pointer-events:none}
+/* v2.371: 「展开更多」条 —— 贴在最新那张卡的上沿。折叠时只留最新一张,
+   点它才把其余卡片放出来 (面板底边钉在跑马灯上沿, 所以是**向上展开**)。 */
+#news-toast #nto-more{pointer-events:auto;cursor:pointer;display:none;
+                     align-items:center;justify-content:center;gap:3px;
+                     font-size:9px;line-height:11px;color:var(--gold);
+                     background:var(--win-glass);border:1px solid var(--bd2);
+                     border-left:3px solid var(--red);border-radius:4px;
+                     padding:2px 7px;box-sizing:border-box;overflow:hidden;
+                     white-space:nowrap;text-overflow:ellipsis;
+                     animation:ntoIn .18s ease-out}
+#news-toast #nto-more:hover{background:var(--bg3);border-color:var(--red);
+                           box-shadow:0 4px 18px var(--sh-lg)}
+#news-toast #nto-more b{color:var(--red);font-weight:700}
+/* 折叠态: 只有带 .nto-top 的那张 (最新) 放行 */
+#news-toast.nto-fold #nto-list .nto:not(.nto-top){display:none}
 #news-toast .nto{pointer-events:auto;cursor:pointer;background:var(--win-glass);
                  border:1px solid var(--bd2);border-left:3px solid var(--red);
                  border-radius:4px;box-shadow:0 3px 14px var(--sh-md);
@@ -2363,7 +2381,11 @@ th.th-flip:hover .hdr-swap > i{ text-decoration: underline; text-underline-offse
        压成正序 ⇒ 新卡片掉到最下面 —— 实测踩过。
      位置/宽度由 ntoLayout() 现算 (贴 #news-tick-l), 这里只给壳。
      ⚠ 空的时候 display:none —— 否则 flex 容器虽无子元素也会撑出一条 4px gap 的空条。 -->
-<div id="news-toast" style="display:none"></div>
+<div id="news-toast" style="display:none">
+  <!-- v2.371: 展开更多条 (默认只显一张卡, 有更多时点这里向上展开) -->
+  <div id="nto-more"><span id="nto-more-t">▲ 还有 0 条</span></div>
+  <div id="nto-list"></div>
+</div>
 <!-- v2.152: 自动任务气泡容器（贴 ⚡快照更新 按钮上方, 由 JS 现算位置） -->
 <div id="auto-toast" style="display:none"></div>
 
@@ -6575,6 +6597,56 @@ function ntoLayout(){
   box.style.bottom=(window.innerHeight-r.top)+'px';
 }
 
+// === v2.371 折叠态 (用户 m42242) =====================================
+// 默认只显最新一张; 上面那颗「▲ 还有 N 条」点一下把其余放出来, 再点收起。
+// !!! 所有对子节点的操作都必须走列表取元素函数, 不能再用 $('news-toast'):
+//     外层现在多了一个 #nto-more, children.length 会多算 1 => 每次都少留一张卡。
+var NTO_FOLD = {open:false};
+function ntoList(){ return $('nto-list'); }
+
+// 重算「哪张是最新的 / 按钮显不显 / 折叠与否 / 外层显不显」—— 任何增删后都要调一次
+function ntoFoldApply(){
+  var box=$('news-toast'), l=ntoList();
+  if(!box||!l)return;
+  var cards=l.children, n=cards.length, i;
+  // column-reverse => DOM 最后一个 = 视觉最上面 = 最新那张
+  for(i=0;i<n;i++){
+    if(i===n-1)cards[i].classList.add('nto-top');
+    else cards[i].classList.remove('nto-top');
+  }
+  var extra=n-1;
+  var more=$('nto-more'), mt=$('nto-more-t');
+  if(more){
+    if(!more._ntoBound){
+      // 不用内联 onclick: 这段代码所在作用域不保证是全局, 内联属性会 ReferenceError
+      more._ntoBound=1;
+      more.addEventListener('click',function(e){
+        e.stopPropagation();
+        ntoFoldToggle();
+      });
+      more.addEventListener('contextmenu',function(e){
+        e.preventDefault();e.stopPropagation();
+      });
+    }
+    if(extra>0){
+      more.style.display='flex';
+      if(mt)mt.textContent=(NTO_FOLD.open?'▼ 收起 ':'▲ 还有 ')+extra+' 条';
+    }else{
+      more.style.display='none';
+      NTO_FOLD.open=false;          // 只剩一张就没得展开, 状态归位
+    }
+  }
+  if(!NTO_FOLD.open)box.classList.add('nto-fold');
+  else box.classList.remove('nto-fold');
+  box.style.display=(n?'flex':'none');
+  ntoLayout();
+}
+
+function ntoFoldToggle(){
+  NTO_FOLD.open=!NTO_FOLD.open;
+  ntoFoldApply();
+}
+
 // 一张卡片的 DOM
 // v2.163: 判定行 HTML。imp = {i,d,s,l,w} —— d: 1利好/-1利空/0中性, w: 传导理由
 //   ⚠ 理由 w 是**模型输出**, 一律 escAttr。
@@ -6630,16 +6702,17 @@ function ntoMake(x){
 }
 
 // 淡出并移除 (右键 / 超限淘汰共用)
+// v2.371: 只动 #nto-list 里的卡; 删完必须重算折叠 (可能就剩一张 / 一张不剩)
 function ntoDrop(id){
-  var box=$('news-toast');if(!box)return;
-  var el=box.querySelector('[data-nto-id="'+id+'"]');
+  var l=ntoList();if(!l)return;
+  var el=l.querySelector('[data-nto-id="'+id+'"]');
   ntoSeen()[id]=1;
   NTO_IDS=NTO_IDS.filter(function(v){return v!==id;});
-  if(!el)return;
+  if(!el){ntoFoldApply();return;}
   el.classList.add('out');
   setTimeout(function(){
     if(el.parentNode)el.parentNode.removeChild(el);
-    if(box&&!box.children.length)box.style.display='none';
+    ntoFoldApply();
   },170);
 }
 
@@ -6959,29 +7032,33 @@ function newsToastFeed(items){
 }
 
 // v2.163: 单张入屏 (原 newsToastFeed 尾段抽出来, 供「新闻」与「提示卡」两条路径共用)
+// v2.371: 往 #nto-list 里追加; 淘汰与折叠都由它自己那张列表算, 不用管外层那颗按钮
 function ntoPush(x){
-  var box=$('news-toast');if(!box)return;
+  var l=ntoList();if(!l)return;
   if(NTO_IDS.indexOf(x.id)>=0)return;               // 已在屏上 (理论上不会, 保险)
-  box.appendChild(ntoMake(x));                      // column-reverse ⇒ 新的在最上面
+  l.appendChild(ntoMake(x));                        // column-reverse => 新的在最上面
   NTO_IDS.push(x.id);
-  // 超限: 淘汰最旧的。DOM[0] = 视觉最下面那张 = 最早来的
-  // ⚠ 不能写成 while(box.children.length>NTO_MAX){box.removeChild(box.firstChild)}
+  // 超限: 淘汰最旧的。children[0] = 列表最下面那张 = 最早来的
+  // 不能写成 while(l.children.length>NTO_MAX){l.removeChild(l.firstChild)}
   //   —— 淡出动画要 170ms 才真删, 期间 children.length 不减, 那个 while 会**原地死循环**。
   //   先算出该淘汰几张 (按"含待删"的总数算), 再逐张打标记。
-  var over=box.children.length-NTO_MAX;
+  var over=l.children.length-NTO_MAX;
   for(var k=0;k<over;k++){
-    var old=box.children[k];        // 注意: 从 0 开始数 = 最旧的几张, 不动后续节点序
+    var old=l.children[k];        // 注意: 从 0 开始数 = 最旧的几张, 不动后续节点序
     if(!old)break;
     var oid=old.getAttribute('data-nto-id');
     old.classList.add('out');
     (function(e){
-      setTimeout(function(){if(e.parentNode)e.parentNode.removeChild(e);},170);
+      // v2.371b: 删完必须重算折叠 —— 否则按钮上的「还有 N 条」停在淘汰前的数
+      setTimeout(function(){
+        if(e.parentNode)e.parentNode.removeChild(e);
+        ntoFoldApply();
+      },170);
     })(old);
     var idx=NTO_IDS.indexOf(oid);
     if(idx>=0)NTO_IDS.splice(idx,1);
   }
-  box.style.display=box.children.length?'flex':'none';
-  ntoLayout();
+  ntoFoldApply();
 }
 
 // 右下角"全部清掉"? —— 不加。用户只要左键/右键两种语义, 别自作主张加第三个入口。
