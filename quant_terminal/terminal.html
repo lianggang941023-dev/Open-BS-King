@@ -20523,7 +20523,10 @@ function idxpDrawHead(d){
   idxpSt.c1.setOption({
     animation: false,
     backgroundColor: 'transparent',
-    grid: {left: 60, right: 24, top: 26, bottom: 26},
+    /* v2.373: right 24 -> 56。上图有右轴(指数), 4 位刻度文字实测宽 21px + margin 8px,
+       24px 放不下 ⇒ 文字右边界 1330.1 超出画布 1325, 末位被裁(6000 显示成 600)。
+       同一 grid 串在 c2(下图比值, 无右轴) 里也有一份, 那份不动。 */
+    grid: {left: 60, right: 56, top: 26, bottom: 26},
     tooltip: {
       trigger: 'axis',
       axisPointer: {type: 'cross', label: {backgroundColor: 'rgba(60,60,72,0.92)'}},
