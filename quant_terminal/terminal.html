@@ -22451,8 +22451,9 @@ function regWdEffect(rs){
        +       '<th style="width:calc(var(--wfs)*2.2);font-size:calc(var(--wfs)*0.62);color:var(--tx3);text-align:left"></th>';
     for (var si = 0; si < REG_ORDER.length; si++) {
       var st = REG_ORDER[si];
-      h += '<th style="font-size:calc(var(--wfs)*0.78);font-weight:600;vertical-align:bottom;text-align:'
-         + (st === 'range' ? 'center' : 'right')
+      // v2.381 (用户 m02861): 表头一律右对齐 —— 数据格是 text-align:right,
+      //   原来震荡用 center, 比其它 5 个表头左移半个列宽, 看着挤在偏强旁边.
+      h += '<th style="font-size:calc(var(--wfs)*0.78);font-weight:600;vertical-align:bottom;text-align:right'
          + ';color:' + (st === 'range' ? 'var(--regime-3)' : regCol(st)) + '">' + regLbl(st) + '</th>';
     }
     h += '</tr></thead><tbody>';
