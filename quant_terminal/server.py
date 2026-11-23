@@ -555,6 +555,8 @@ def _cache_scan_slot(mode, pool, lines, results):
                 'results': rows,
                 # >>> AUCTION BEGIN (v2.249 2026-11-06) 竞价打板结论也落盘
                 'auction_info': (SCAN_STATE.get('auction_info') if mode == 'auction' else None),
+                # v2.376: 一字板参考名单 —— 独立键, 不进 results, 也不进归档 json
+                'auction_refs': (SCAN_STATE.get('auction_refs') if mode == 'auction' else None),
                 # <<< AUCTION END
                 # >>> REBOUND BEGIN (v2.257 2026-11-07) 超跌反弹结论也落盘
                 'rebound_info': (SCAN_STATE.get('rebound_info') if mode == 'rebound' else None),
@@ -2088,6 +2090,17 @@ def run_scan_async(mode='20', lines='4', pool='auto'):
                 # v2.253: locked=9:30 后读 day/query 还原的真实竞价值, 前端据此显示「已锁定」
                 'auct_src': _auc.get('auct_src'),
             }
+            # >>> AUCTION REF BEGIN (v2.376) 一字板参考名单 —— 只下发/展示
+            #   ① 不进 results (所以 save_scan 的 rows、scan_cache 的 results 都碰不到它)
+            #   ② 不进 auction_info (那个字典会被 save_scan 的 info= 一起写进归档)
+            _refs = _auc.get('refs') or []
+            for _r in _refs:
+                try:
+                    QuantHandler._attach_trend_status(_r)  # 行业/概念趋势色, 与主表同源
+                except Exception:
+                    pass
+            SCAN_STATE['auction_refs'] = _refs
+            # <<< AUCTION REF END
         # <<< AUCTION END
         # >>> REBOUND BEGIN
         elif mode == 'rebound':
@@ -5731,6 +5744,8 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                         summary['buy_signals'] = sum(1 for r in _rs if r.get('verdict') == 'exec')
                         summary['watch_signals'] = sum(1 for r in _rs if r.get('verdict') == 'watch')
                         summary['auction_info'] = SCAN_STATE.get('auction_info') or {}
+                        # v2.376: 一字板参考名单 (独立下发, 不混进 all_results)
+                        summary['auction_refs'] = SCAN_STATE.get('auction_refs') or []
                         summary['module_stats'] = {
                             'auction_total': len(_rs),
                             'auction_exec': summary['buy_signals'],
@@ -5880,6 +5895,8 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                                      'total_results': slot.get('total_results', len(slot.get('results') or [])),
                                      # >>> AUCTION BEGIN (v2.249) 落盘里的结论下发给前端
                                      'auction_info': slot.get('auction_info'),
+                                     # v2.376: 一字板参考名单 (读缓存路径也要还原)
+                                     'auction_refs': slot.get('auction_refs'),
                                      # <<< AUCTION END
                                      # >>> REBOUND BEGIN (v2.257 2026-11-07) 超跌反弹的观察日/漏斗
                                      #   ★ 上面这个 'slot' 字典是**白名单**, 不在这里列出的键

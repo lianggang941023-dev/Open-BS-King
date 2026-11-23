@@ -174,6 +174,12 @@ T_OPEN = (9, 25)         # 竞价结束
 T_CUT = (9, 30)          # 连续竞价开始 —— 过此点数据不再是竞价口径
 
 MAIN_BOARD_PREFIX = ('600', '601', '603', '605', '000', '001', '002', '003')
+# ★ v2.376 (2026-11-23 用户 m00833): 北交所号段 —— 920 是 2024 年后统一新段
+#   (本地 357 只全在这一段), 43/83/87/88 是老三板/新三板转板遗留段。
+#   必须与前端 terminal.html 的 _tierLim() 用同一套正则, 两端判板别不能分叉。
+BSE_PREFIX = ('92', '43', '83', '87', '88')
+# 一字板参考名单最多返回多少只 (前端默认只展开 10 只, 其余手动展开)
+REF_MAX = 60
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 
@@ -227,6 +233,10 @@ def limit_up_pct(code):
       昨收 14.36, 真涨停价 15.80, 按 9.9% 算成 15.78, 差 0.02 > 容差 → 一字板没识别出来。
     """
     c = re.sub(r'\D', '', str(code or ''))
+    # v2.376: 北交所 30% —— 原来非主板一律按 20% 算, 920 段的涨停价会低 8.3%,
+    #   一字板全部漏识别 (20% 档算出来的价远低于真涨停价)。
+    if c.startswith(BSE_PREFIX):
+        return 30.0
     return 10.0 if c.startswith(MAIN_BOARD_PREFIX) else 20.0
 
 
@@ -271,7 +281,13 @@ def _data_date_from_ts(ts):
 # 网络: 腾讯实时快照
 # ============================================================
 def _tx_sym(num):
+    # ★ v2.376 (2026-11-23 用户 m00833): 补北交所分支。
+    #   920xxx 以 '9' 开头, 按下面那行会被错发成 sh920001 —— 腾讯回
+    #   v_pv_none_match="1"; (空串, 拿不到任何字段)。
+    #   实测 bj920001 / bj430047 / bj830799 全部正常返回 87 个字段。
     n = str(num)
+    if n.startswith(BSE_PREFIX):
+        return 'bj' + n
     return ('sh' + n) if n.startswith(('6', '9')) else ('sz' + n)
 
 
@@ -1436,6 +1452,15 @@ def scan(progress_callback=None, log=None, with_ann=False, limit=0):
     # 模式三态: live(9:25~9:30 快照) / locked(9:30 后用 09:30 bar 还原) / replay(取不到)
     if mode == 'replay' and auct_src == 'day0930':
         mode = 'locked'
+    # >>> AUCTION REF BEGIN (v2.376) 一字板参考通道 —— 旁路, 不影响上面的选股口径
+    _t_ref = time.time()
+    try:
+        _refs = scan_refs(quotes=quotes, date_str=date_str, log=log)
+    except Exception as _re:
+        _refs = []
+        log('[参考] 一字板参考通道失败 (不影响主结果): %s' % _re)
+    _ref_el = round(time.time() - _t_ref, 1)
+    # <<< AUCTION REF END
     res.update({
         'ok': True, 'mode': mode, 'date': date_str, 'auct_src': auct_src,
         'elapsed': round(time.time() - t0, 1),
@@ -1444,6 +1469,9 @@ def scan(progress_callback=None, log=None, with_ann=False, limit=0):
         'n_sample': len(rows),
         'warn': ('' if mode != 'replay' else '数据非竞价口径'),
         'auction_window': live,
+        # >>> AUCTION REF BEGIN (v2.376) 参考名单只跟着 res 走, 不进 sample
+        'refs': _refs, 'n_refs': len(_refs), 'ref_elapsed': _ref_el,
+        # <<< AUCTION REF END
     })
     log('[结果] 候选池 %d 只 · 主推 %s · 备选 %s' % (
         len(rows),
@@ -1454,6 +1482,198 @@ def scan(progress_callback=None, log=None, with_ann=False, limit=0):
     log('[结果] %s' % res['note'])
     log('[完成] 总耗时 %.1f 秒' % res['elapsed'])
     return res
+
+
+
+# ============================================================
+# 一字板参考通道 (v2.376 · 2026-11-23 用户 m00662 / m00721 / m00833)
+#
+# 用户原话 (m00662):「若某个板块内出现一字板开盘, 那么同板块内的其他票如果也出现在
+#   竞价打板模式, 买入他的胜率可能更高 … 这个列表不能对现在的竞价打板模式的数据
+#   造成前后条件不同导致的割裂的影响 … 单独分开显示并且不能写入每天的记录里面」
+# 用户原话 (m00721):「在9:27分启动竞价打板模式选股的时候, 把除了ST股票的所有
+#   开盘即涨停的列出来作为参考」
+# 用户原话 (m00833):「这一条算你多虑了 … 因为A股规则是25分锁定开盘价格」
+#
+# ★ 为什么必须走旁路, 不能改主流程:
+#   evaluate_one() 有 4 道闸会挡掉一字板 ——
+#     · len(hist) < 21            → K线太短直接丢
+#     · 量比 / 竞价占比 为 None    → 指标算不出来直接丢 (一字板竞价量极小)
+#     · 流通市值 >= 160 亿         → 粗筛阶段就丢掉
+#   hard_gate() 4 道硬门槛 (竞价涨幅≥1% / 竞占比≥2% / 量比≥5 / 昨额≥5000万) 再挡一遍
+#   classify() 第 ⑪ 条还会把「一字涨停买不进」判成淘汰
+#   改这些阈值 = 改变历史选股口径 → 回测前后不可比。所以这里一行都不碰主流程,
+#   只额外算一份名单, 由 server 单独下发、前端单独显示, 既不进 results 也不进归档。
+# ============================================================
+
+def _board_of(code):
+    """板别标签 (只用于界面提示, 不参与任何判定)"""
+    c = re.sub(r'\D', '', str(code or ''))
+    if c.startswith(MAIN_BOARD_PREFIX):
+        return '主板'
+    if c.startswith(BSE_PREFIX):
+        return '北交所'
+    if c.startswith(('688', '689')):
+        return '科创板'
+    if c.startswith(('300', '301', '302')):
+        return '创业板'
+    return ''
+
+
+def _csv_name(code):
+    """6 位裸码 → 本地 K 线文件名 (不含 .csv)
+
+    北交所是 BZ 前缀 (实测 kline_data/daily 里 357 只全是 BZ920xxx.csv)。
+    ★ scan() 里算封板率那段写死了 SH/SZ 两种前缀, 北交所会读不到文件 ——
+      那条路径只服务主列表, 这里旁路自己按板别拼, 不动主流程。
+    """
+    c = re.sub(r'\D', '', str(code or ''))
+    if c.startswith(BSE_PREFIX):
+        return 'BZ' + c
+    return ('SH' if c.startswith(('6', '9')) else 'SZ') + c
+
+
+def scan_refs(quotes=None, date_str=None, log=None):
+    """一字板参考名单 —— 开盘即涨停(非ST), 覆盖沪深主板+创业板+科创板+北交所
+
+    判据 (用户 m00721 ② 明确要求): 用涨停价 zt_price() 判「今开 == 涨停价」,
+    不用「竞价涨幅 > 9.9%」—— 双创是 20%、北证是 30%, 9.9% 那套在它们身上不成立。
+
+    用户 m00833 ⑥ 已确认不必再判「是否炸板」:
+      9:25 集合竞价已锁定开盘价, 25 分涨停的 27 分必然还是涨停 —— 本模式就是
+      9:27 定时跑, 所以「今开 == 涨停价」等价于「开盘即涨停且当时仍封住」。
+
+    返回 list[dict], 字段与 to_scan_rows() 同构 (verdict='ref', verdict_tx='参考'),
+    按竞价额降序 (一字板里竞价额越大 = 封单越硬), 最多 REF_MAX 只。
+
+    ★ 绝不返回进结果表的东西: 调用方(scan)只会把它塞进 res['refs'],
+      server 只下发 / 不写 results / 不写归档。
+    """
+    t0 = time.time()
+    date_str = date_str or _today()
+    d = kline_dir()
+    try:
+        files = [fn for fn in os.listdir(d) if fn.lower().endswith('.csv')]
+    except Exception:
+        files = []
+
+    codes = []
+    for fn in files:
+        c = fn[:-4].upper()
+        if len(c) != 8 or c[:2] not in ('SH', 'SZ', 'BZ', 'BJ'):
+            continue
+        n = c[2:]
+        if len(n) == 6 and n.isdigit():
+            codes.append(n)
+    if not codes:
+        return []
+
+    # 主流程已经拉过沪深主板那 3200 只的快照 → 只补差集 (双创 + 北证), 省 2/3 的等待
+    q = dict(quotes or {})
+    miss = [n for n in codes if n not in q]
+    if miss:
+        try:
+            q.update(fetch_quotes(miss, workers=20))
+        except Exception as _e:
+            if log:
+                log('[参考] 补拉快照失败(%s), 用已有 %d 只继续' % (_e, len(q)))
+
+    hit = []
+    for n in codes:
+        qq = q.get(n)
+        if not qq:
+            continue
+        o = qq.get('open') or 0.0
+        prev = qq.get('prev') or 0.0
+        if o <= 0 or prev <= 0:          # 停牌 / 无量 / 数据缺失
+            continue
+        nm = qq.get('name') or ''
+        if is_st(nm):                    # 用户 m00721 ①: 特例股不考虑 ST
+            continue
+        zt = zt_price(n, prev)
+        if zt is None or abs(o - zt) >= 0.005:
+            continue
+        hit.append((n, nm, qq, o, prev))
+
+    if log:
+        log('[参考] 一字板候选 %d 只 (全市场 %d 只扫过, 快照 %d 只, 耗时 %.1f 秒)'
+            % (len(hit), len(codes), len(q), time.time() - t0))
+
+    ind_map, con_map = load_ind_con()
+    t_sw = _hm()
+    out = []
+    for n, nm, qq, o, prev in hit:
+        try:
+            rows = read_csv_tail(os.path.join(d, _csv_name(n) + '.csv'), 90)
+        except Exception:
+            rows = []
+        hist = [r for r in rows if r['date'] < date_str]
+
+        cap_t_yi, cap_f_yi = _cap_of(rows)
+        cap_f_yday = 0.0
+        if cap_f_yi > 0:
+            last_close = next((r['close'] for r in reversed(rows) if r['close'] > 0), 0.0)
+            if last_close > 0:
+                cap_f_yday = (cap_f_yi * 1e8 / last_close) * prev / 1e8
+            else:
+                cap_f_yday = cap_f_yi
+
+        prev5 = _prev5_vol(hist) if hist else 0.0
+        vr = auct_volratio(qq.get('vol') or 0.0, prev5)
+
+        prev_amt = 0.0
+        if hist:
+            yd = hist[-1]
+            prev_amt = (yd['vol'] * 100.0
+                        * ((yd['high'] + yd['low'] + yd['close']) / 3.0))
+        amt = qq.get('amt') or 0.0
+        ratio = (amt / prev_amt * 100.0) if prev_amt > 0 else None
+
+        _free = _free_of(rows)
+        turnover_y = turnover_pct(hist[-1]['vol'], _free) if hist else None
+        turnover_t = turnover_pct(qq.get('vol') or 0.0, _free)
+
+        srate, stouch, slock = seal_rate(rows, SEAL_WINDOW) if rows else (None, 0, 0)
+        use_today = (t_sw >= TURN_SWITCH_MIN)
+
+        px = qq.get('price') or o
+        out.append({
+            'code': n, 'name': nm,
+            'price': o, 'open': o, 'prev': prev,
+            'change_pct': round(px / prev * 100.0 - 100.0, 2),
+            'auct_pct': round((o - prev) / prev * 100.0, 2),
+            'auct_ratio': (round(ratio, 2) if ratio is not None else None),
+            'auct_ratio_yy': None, 'auct_amt_yday': None,
+            'auct_amt': amt, 'prev_amt': prev_amt,
+            'prev_amt_yi': round(prev_amt / 1e8, 2),
+            'vol_ratio': (round(vr, 2) if vr is not None else None),
+            'mkt_cap': round(cap_f_yday, 1),
+            'cap_near': bool(cap_f_yday and 155.0 <= cap_f_yday < 165.0),
+            'seal_rate': (round(srate, 1) if srate is not None else None),
+            'seal_touched': stouch, 'seal_locked': slock,
+            'turnover': (turnover_t if use_today else turnover_y),
+            'turnover_y': turnover_y, 'turnover_t': turnover_t,
+            'turnover_src': ('today' if use_today else 'yday'),
+            'free_shares': _free,
+            'sector': ind_map.get(n, ''),
+            'concept': con_map.get(n, ''),
+            'zt_cnt': 0,
+            'verdict': 'ref', 'verdict_tx': '参考',
+            'reason': '开盘即涨停(一字板)',
+            'is_valid': True,
+            'mode': 'auction', 'mode_detail': '竞价打板 · 参考',
+            'price_over20': bool(o and o > PRICE_SOFT),
+            'board': _board_of(n),
+            'limit_pct': limit_up_pct(n),
+        })
+
+    out.sort(key=lambda x: (-(x.get('auct_amt') or 0.0), x.get('code') or ''))
+    if len(out) > REF_MAX:
+        out = out[:REF_MAX]
+    if log:
+        log('[参考] 一字板参考名单 %d 只 (总耗时 %.1f 秒) —— 只做参考展示, 不进选股/不进归档'
+            % (len(out), time.time() - t0))
+    return out
 
 
 def to_scan_rows(res):

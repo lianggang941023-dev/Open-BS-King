@@ -686,6 +686,26 @@ a.news-k:hover{color:var(--gold);border-bottom-color:var(--gold)}
   }
 }
 
+/* ===== v2.376 一字板参考通道 (用户 m00662 / m00721 / m00833) =====
+   ★ 3 秒呼吸为什么不用 @keyframes:
+     用户机器 Windows「显示动画控件和元素」是关的 → Chrome 报 prefers-reduced-motion:reduce,
+     CSS 动画会被整个抑制 (v2.292b 因为这条删过 .hdr-swap 的降级)。所以这里改用
+     JS 定时器每 1.5 秒改一次 inline color + transition:color 1.5s 线性插值,
+     一个来回正好 3 秒, 且不受系统动画开关影响。 */
+.aur-hb{transition:color 1.5s ease-in-out}
+#aur-ref-box{flex-shrink:0}
+#aur-ref-box .aur-bar{display:flex;align-items:center;gap:8px;padding:3px 6px;font-size:9px}
+#aur-ref-box .aur-bar.top{border-bottom:1px solid var(--purple)}
+#aur-ref-box .aur-bar.bot{border-bottom:1px dashed var(--purple)}
+#aur-ref-box .aur-tag{color:var(--purple);font-weight:700}
+#aur-ref-box .aur-note{color:var(--tx3)}
+#aur-ref-box table{width:100%;border-collapse:collapse}
+#aur-ref-box th{font-size:9px;font-weight:normal;color:var(--tx2);padding:2px 0;text-align:center;white-space:nowrap;border-bottom:1px solid var(--bd2)}
+#aur-ref-box td{font-size:9px;text-align:center;padding:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#aur-ref-box tbody tr{cursor:pointer}
+#aur-ref-box tbody tr:hover{background:var(--bg2)}
+#aur-ref-box tbody tr.sel{background:var(--bg2);outline:1px solid var(--purple)}
+
 /* K-line area */
 /* v2.100e (2026-09-16): K线数据信息栏 —— 以前是 absolute 浮在 #chart-wrap **里面**(压着K线画),
    现在搬到 #chart-wrap **外面**做一条独立 flex 行 (markup 见 K线区那段的注释)。
@@ -2270,7 +2290,8 @@ th.th-flip:hover .hdr-swap > i{ text-decoration: underline; text-underline-offse
       </span>
     </div>
     <div class="pnl-body" id="tbl-wrap">
-      <table id="result-table">
+      <div id="aur-ref-box" style="display:none"></div>
+  <table id="result-table">
         <thead><tr id="tbl-head">
           <th data-col="cons_score" onclick="sortTable('cons_score')" style="width:36px">评分</th>
           <th data-col="code" onclick="sortTable('code')" style="width:52px">代码</th>
@@ -4501,6 +4522,7 @@ async function viewCached(mode){
   if(b&&slot.lines)b.textContent=slot.lines+'线档';
   // >>> AUCTION BEGIN (v2.249) 读落盘路径也要结论条
   if(mode==='auction')renderAuctionBar(slot.auction_info);
+  aurSetRefs(slot.auction_refs);   // v2.376: 读落盘路径也带参考名单
   // <<< AUCTION END
   // >>> REBOUND BEGIN (v2.257) 读落盘路径也要结论条
   if(mode==='rebound')renderReboundBar(slot.rebound_info);
@@ -4780,6 +4802,7 @@ async function loadResults(){
     dispCount=PAGE_N; _pgHold=false;   // v2.268: 新扫描结果 = 回到第一页
     applyTierFilter();
     updateStats(r);
+  aurSetRefs(r.auction_refs);   // v2.376: 一字板参考名单 (与 results 完全独立的字段)
     // >>> AUCTION BEGIN (v2.249) 竞价打板结论条
     renderAuctionBar(r.auction_info);
     // <<< AUCTION END
@@ -8232,6 +8255,175 @@ function aucRainbowWhy(r){
 // v2.207 (2026-10-23 用户 m04644): 全量热榜窗口也要用同一套概念染色+浮窗,
 //   所以把 conceptTd 里的三段(排序/浮窗全文/单元格截断)抽成可复用函数。
 //   conceptTd 本身输出一个字节都不变 —— 主表全部模式照旧。
+// ============================================================
+// v2.376 一字板参考通道 (用户 m00662 / m00721 / m00833)
+//
+// 后端 auction_scan.scan_refs() 单独算一份「开盘即涨停(非ST)」名单, 走
+// SCAN_STATE['auction_refs'] → /api/scan/result 的 summary.auction_refs 下发,
+// **不进 results / 不进归档 json** —— 所以回测口径一点没变。
+// 这里只做三件事:
+//   ① 把名单渲染成独立一块, 贴在主列表上方 (不受四个板块勾选框影响)
+//   ② 名单里有票的行业/概念, 在主表里做「趋势色 ↔ 一字板紫」3 秒呼吸
+//   ③ 概念单元格排序: 含一字板 > 趋势好  (仅竞价打板模式)
+// ============================================================
+var AUR_SHOW = 10;                     // 默认展开几只 (用户 m00833 ⑤: 10 只)
+window._aurRefs = [];                  // 参考名单原样
+window._aurSecs = {};                  // {行业名:[代码...]} 有票的行业
+window._aurCons = {};                  // {概念名:[代码...]} 有票的概念
+window._aurCollapsed = false;          // 收起状态 (收起后染色照旧)
+window._aurMore = false;               // 超过 10 只时是否全部展开
+
+function aurOn(){ return (window._scanMode||'')==='auction'; }
+
+function aurSetRefs(list){
+  window._aurRefs = (list&&list.length)?list:[];
+  var sm={}, cm={}, i, j;
+  for(i=0;i<window._aurRefs.length;i++){
+    var r=window._aurRefs[i]||{};
+    var cd=String(r.code||'');
+    var sec=String(r.sector||'').trim();
+    if(sec){ if(!sm[sec])sm[sec]=[]; sm[sec].push(cd); }
+    var cs=String(r.concept||'').split('|');
+    for(j=0;j<cs.length;j++){
+      var nm=cs[j].trim();
+      if(nm){ if(!cm[nm])cm[nm]=[]; cm[nm].push(cd); }
+    }
+  }
+  window._aurSecs=sm; window._aurCons=cm;
+}
+// ★ v2.376 修正: 命中要「有别的票是一字板」, 不能是自己 —— 用户原话是「同板块内的其他票」。
+//   参考票本身也在主列表里(m00721 ④ 允许重复), 不排自己的话荣联科技 38 个概念全亮,
+//   全表 66% 的概念都被标成"有一字板", 紫光铺满反而看不出哪儿有加成。
+function _aurHasOther(arr, own){
+  if(!arr)return false;
+  for(var i=0;i<arr.length;i++) if(arr[i]!==own) return true;
+  return false;
+}
+function aurHitSector(sec, own){ return !!(sec && aurOn() && _aurHasOther(window._aurSecs[sec], String(own||''))); }
+function aurHitConcept(nm, own){ return !!(nm && aurOn() && _aurHasOther(window._aurCons[nm], String(own||''))); }
+
+// 行业格 —— 主表竞价行与参考行共用 (有票的行业呼吸到紫色)
+function aurSecTd(r){
+  var sec=String((r&&r.sector)||'');
+  var base=secColor(r);
+  var hit=aurHitSector(sec.trim(), r&&r.code);
+  return '<td class="sec-cell'+(hit?' aur-hb':'')+'"'
+    + (hit ? ' data-aur-c0="'+escAttr(base)+'"' : '')
+    + ' style="color:'+base+'" data-tipfn="indSubTipCell" data-par="'+escAttr(sec)+'">'
+    + escAttr(sec.substring(0,6)) + '</td>';
+}
+
+// ---- 呼吸定时器: 1.5 秒翻一次 + transition 1.5s = 3 秒一个来回 ----
+var _aurHBT=null, _aurHBS=0;
+function aurHBPaint(){
+  _aurHBS = 1-_aurHBS;
+  var els=document.querySelectorAll('.aur-hb');
+  for(var i=0;i<els.length;i++){
+    var e=els[i], c0=e.getAttribute('data-aur-c0');
+    if(!c0)continue;
+    e.style.color = _aurHBS ? 'var(--purple)' : c0;
+  }
+}
+function aurTimerSync(){
+  var has=document.querySelectorAll('.aur-hb').length>0;
+  if(!has){
+    if(_aurHBT){ clearInterval(_aurHBT); _aurHBT=null; _aurHBS=0; }
+    return;
+  }
+  if(_aurHBT)return;
+  _aurHBS=0;
+  _aurHBT=setInterval(aurHBPaint, 1500);
+}
+
+// ---- 参考行 (列结构对齐主表竞价 13 列) ----
+function aurRefRow(r, i){
+  var ar=r.auct_ratio, vr=r.vol_ratio, sr=r.seal_rate;
+  var arCol=(ar==null)?'var(--tx3)':(ar>=2?'var(--red)':'var(--gold)');
+  var vrCol=(vr==null)?'var(--tx3)':(vr>=5?'var(--red)':(vr>=2?'var(--gold)':'var(--tx2)'));
+  var srTxt=(sr==null)?'--':(fmt(sr,1)+'%');
+  var srCol=(sr==null)?'var(--tx3)':(sr>=70?'var(--red)':(sr>=40?'var(--gold)':'var(--tx2)'));
+  var tv=(r.turnover_src==='today')?r.turnover_t:r.turnover_y;
+  if(tv==null) tv=r.turnover;
+  var tvTxt=(tv==null)?'--':(fmt(tv,2)+'%');
+  var tvCol=(tv==null)?'var(--tx3)':'var(--tx2)';
+  var code=String(r.code||''), bc=bareCode(code);
+  var h='<tr class="aur-row" id="aur-row-'+i+'" data-code="'+escAttr(code)+'"'
+      + ' onclick="selectStock(\''+escAttr(code)+'\',-1)"'   // -1: 不动主表行选中态 (与龙头榜一致)
+      + ' title="'+escAttr((r.name||'')+'  '+code+'  '+(r.board||'')+' 涨停幅度'+(r.limit_pct||'')+'%')+'">'
+      + '<td style="color:var(--red);font-weight:700">'+fmt(r.auct_pct,2)+'%</td>'
+      + '<td data-zt20="'+bc+'" style="color:'+zt20Col(ZT20[bc])+'">'+escAttr(code)+'</td>'
+      + '<td>'+escAttr(r.name||'')+'</td>'
+      + '<td class="'+clr(r.change_pct)+'">'+fmt(r.change_pct,1)+'%</td>'
+      + '<td>'+fmt(r.price,2)+'</td>'
+      + '<td style="color:'+arCol+'">'+(ar==null?'--':(fmt(ar,2)+'%'))+'</td>'
+      + '<td style="color:'+vrCol+'">'+(vr==null?'--':fmt(vr,2))+'</td>'
+      + '<td style="color:'+srCol+'">'+srTxt+'</td>'
+      + aurSecTd(r)
+      + ztTd(r.sector)
+      + conceptTd(r)
+      + '<td style="color:'+tvCol+'">'+tvTxt+'</td>'
+      + '<td data-col="verdict_tx" style="color:var(--purple);font-weight:700"'
+      + ' title="开盘即涨停(一字板) — 仅作参考, 不参与选股, 也不写入每日记录">参考</td>'
+      + '</tr>';
+  return h;
+}
+
+function aurRefHtml(){
+  var refs=window._aurRefs||[], n=refs.length;
+  if(!aurOn() || !n) return '';
+  var collapsed=window._aurCollapsed===true;
+  var showAll=window._aurMore===true;
+  var lim = collapsed ? 0 : (showAll ? n : Math.min(n, AUR_SHOW));
+  var nSec=Object.keys(window._aurSecs||{}).length;
+  var nCon=Object.keys(window._aurCons||{}).length;
+  var h='';
+  h+='<div class="aur-bar top">'
+    + '<span class="aur-tag">📌 一字板参考 '+n+' 只</span>'
+    + '<span class="aur-note">开盘即涨停(非ST) · 不参与选股 / 不进归档 · 沪深主板+双创+北证</span>'
+    + '<span class="aur-note">行业 '+nSec+' 个 · 概念 '+nCon+' 个带一字板 → 下方紫色呼吸</span>'
+    + '</div>';
+  if(!collapsed){
+    h+='<table><thead><tr>'
+      + '<th style="width:56px">竞价涨幅</th><th style="width:52px">代码</th><th style="width:56px">简称</th>'
+      + '<th style="width:48px">涨幅</th><th style="width:52px">现价</th>'
+      + '<th style="width:60px">竞总比</th><th style="width:50px">量比</th><th style="width:56px">封板率</th>'
+      + '<th style="width:48px">行业</th><th style="width:44px">梯队</th><th style="width:80px">概念</th>'
+      + '<th style="width:56px">换手</th>'
+      + '<th style="width:52px;color:var(--purple);font-weight:700"'
+      + ' title="开盘即涨停(一字板) — 仅作参考, 不参与选股, 也不写入每日记录">参考</th>'
+      + '</tr></thead><tbody>';
+    for(var i=0;i<lim;i++) h+=aurRefRow(refs[i], i);
+    h+='</tbody></table>';
+  }
+  h+='<div class="aur-bar bot">';
+  if(collapsed){
+    h+='<span class="aur-note">已收起 '+n+' 只 (染色与排序仍生效)</span>'
+      + '<button class="btn sm" onclick="aurToggleCollapse()" style="font-size:9px;padding:2px 12px;margin-left:auto;border-color:var(--purple);color:var(--purple)">▾ 展开参考 ('+n+'只)</button>';
+  }else{
+    if(n>AUR_SHOW){
+      h+='<button class="btn sm" onclick="aurToggleMore()" style="font-size:9px;padding:2px 12px;border-color:var(--cyan);color:var(--cyan)">'
+        + (showAll ? ('▴ 只留前 '+AUR_SHOW+' 只') : ('▾ 展开全部 ('+n+'只)'))
+        + '</button>';
+    }
+    h+='<span class="aur-note" style="margin-left:auto">'+lim+' / '+n+' 只</span>'
+      + '<button class="btn sm" onclick="aurToggleCollapse()" style="font-size:9px;padding:2px 12px;border-color:var(--tx2);color:var(--tx2)"'
+      + ' title="收起参考票 —— 收起后下方列表的紫色呼吸仍然保留">▴ 收起参考</button>';
+  }
+  h+='</div>';
+  return h;
+}
+
+function aurRender(){
+  var box=$('aur-ref-box');
+  if(!box)return;
+  var h=aurRefHtml();
+  if(!h){ box.style.display='none'; box.innerHTML=''; }
+  else { box.innerHTML=h; box.style.display=''; }
+  aurTimerSync();
+}
+function aurToggleCollapse(){ window._aurCollapsed=!window._aurCollapsed; aurRender(); }
+function aurToggleMore(){ window._aurMore=!window._aurMore; aurRender(); }
+
 function conceptSegs(r){
   var sts=r.concept_status||{};
   var TIER={'强多头':0,'偏多':1,'中性':2,'偏空':3};
@@ -8241,9 +8433,12 @@ function conceptSegs(r){
     var d=sts[nm]||null;
     var tier=(d&&TIER[d.status]!=null)?TIER[d.status]:4;
     var pct=(d&&d.pct!=null)?d.pct:-1;
-    segs.push({nm:nm,d:d,tier:tier,pct:pct});
+    segs.push({nm:nm,d:d,tier:tier,pct:pct,hit:aurHitConcept(nm, r&&r.code)});
   });
+  // v2.376 (用户 m00721 ③): 排序优先级 → ①概念里有票一字板 ②概念趋势好 ③其他
+  //   原来是 ①趋势 ②涨跌幅; 现在「含一字板」插到最前面 (仅竞价打板模式有 hit)。
   segs.sort(function(a,b){
+    if(a.hit!==b.hit)return (b.hit?1:0)-(a.hit?1:0);
     if(a.tier!==b.tier)return a.tier-b.tier;
     return b.pct-a.pct;
   });
@@ -8318,12 +8513,13 @@ function conceptShownHtml(r, maxChars){
   for(var i=0;i<segs.length;i++){
     var nm=segs[i].nm,d=segs[i].d;
     var col=ratingColor(d?d.status:null,d?d.pct:null);
+    var _hit=aurHitConcept(nm, r&&r.code);   // v2.376: 该概念里有【别的票】一字板 → 呼吸
     var rest=cap-used;
     if(rest<=0)break;
     var seg=nm;
     if(seg.length>rest)seg=seg.substring(0,rest);
     if(shown)shown+='<span style="color:var(--tx3)">|</span>';
-    shown+='<span style="color:'+col+'">'+escAttr(seg)+'</span>';
+    shown+='<span'+( _hit?' class="aur-hb" data-aur-c0="'+escAttr(col)+'"':'' )+' style="color:'+col+'">'+escAttr(seg)+'</span>';
     used+=seg.length+1;
   }
   return shown;
@@ -9987,6 +10183,7 @@ function renderTable(filter){
     tierPulse(1);  // v2.86 ① / v2.87: 龙头榜整表都是当日涨停票 → 不打红光(全在呼吸没意义), 只留连板脉冲
     $('tbl-count').textContent=rows.length+'只'+(hiddenLow?' (已折叠低分'+hiddenLow+'只)':'');
     checkDragonDegrade();  // v1 设置: 涨停池降级提示 (不静默)
+    aurRender();   // v2.376: 切到龙头榜时把参考块收掉
     return;
   }
 
@@ -10199,7 +10396,7 @@ function renderTable(filter){
         +'<i style="color:'+ayyCol+'">'+ayyTxt+'</i></span></td>'
         +'<td data-col="vol_ratio" style="color:'+vrCol+'">'+(vr==null?'--':fmt(vr,2))+'</td>'
         +'<td data-col="seal_rate" style="color:'+srCol+'" title="'+escAttr(srTip)+'">'+srTxt+'</td>'
-        +'<td class="sec-cell" style="color:'+secColor(r)+'" data-tipfn="indSubTipCell" data-par="'+escAttr(r.sector||'')+'">'+(r.sector||'').substring(0,6)+'</td>'
+        +aurSecTd(r)   // v2.376: 行业里有票一字板 → 趋势色↔紫 呼吸
         +ztTd(r.sector)
         +conceptTd(r)
         +'<td data-col="turnover" style="color:'+tvCol+'" title="'+escAttr(tvTip)+'">'+tvTxt+'</td>'
@@ -10328,6 +10525,7 @@ function renderTable(filter){
   tblAnim();  // v2.83: 股票列表从上到下逐行出现 (切换列表全播 / 加载更多只播新行)
   tierPulse(mode==='ai'||mode==='smart'?1:0);  // v2.88: 涨停突破/涨停回调也是整表涨停票 (ai 每行"N板/首板" · smart 每行"1板/2板") → 不打红光, 第13列脉冲照留
   $('tbl-count').textContent=rows.length+'只 (显示'+Math.min(dispCount,rows.length)+')';
+  aurRender();   // v2.376: 一字板参考块 (非竞价模式自动隐藏)
   if(mode==='ai')checkDragonDegrade();  // v2.66: 降级提示 (快照识别时无连板/封板资金)
 }
 
