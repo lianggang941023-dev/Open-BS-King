@@ -20,6 +20,62 @@
 ---
 
 ---
+## v2.382 — 2026-11-24
+
+### 修的问题
+
+**同一个项目，不同均线档位显示的「概念数量」不一样**：3 线 351 个、4/5 线 289 个、6 线 324 个。
+屏蔽名单（`quant_terminal/concept_blocklist.txt`，102 条）本该对所有档位一视同仁，
+数量必须处处相同。
+
+### 三个根因
+
+| # | 位置 | 原因 |
+|---|---|---|
+| 1 | `engine.py` `PERSIST_LINES = ('4','5','6')` | **3 线档从来不写 `ma_baseline.json`**，只能每次现算；另外三档有持久基线 |
+| 2 | `server.py` `/api/concept_ma` | 命中基线快照 `results = snap_rows` **直接返回、不重算**。而基线是**屏蔽名单改之前**算的 ⇒ 一直吐 351 / 324 |
+| 3 | `terminal.html` `loadConceptMA(lines, force, live)` | 非 `force` 非 `live` 时**先读 `data_archive/window/trend_concept_N.json` 旧存档**，直接画图返回，永远轮不到接口现算 |
+
+三者叠加：谁被 `force=1` 刷过谁就新，没刷过的继续显示旧数字 —— 于是四档各说各话。
+
+### 改法（三道闸，都在后端，前端不用动）
+
+1. **名单变更即清缓存**（`engine.py` `load_concept_blocklist()`）
+   名单文件 `mtime` 一变就调 `_sector_ma_cache_clear()`。改 `concept_blocklist.txt` 后
+   全链路立刻用新名单，**不用重启、不用手动 force 每一档**。
+
+2. **接口一致性闸**（`server.py` `/api/concept_ma`）
+   拿到基线快照后，按**当前**（已过滤）概念集合校验一遍：把 `con_map` 聚合成
+   `{概念名: 成分股数}`，取 `成分 >= 5` 的作为 live 集合（与 `analyze_concept_ma()`
+   里的 `valid` 过滤逐字一致）。**条数不同 或 名字集合不同** ⇒ 丢弃快照、改走现算。
+
+3. **存档一致性闸**（`server.py` `/api/snapshot`，仅 `trend_concept_` 前缀）
+   同一套比对，不符就返回：
+   `{'ok': False, 'error': '存档已过期(概念名单已变更), 正在重算'}`。
+   前端看到 `ok:False` 自然回落到 `/api/concept_ma` 现算 —— 旧存档再也糊不住人。
+   `trend_sector_*` / `trend_parent_*` 不受影响。
+
+### 效果
+
+- 3 / 4 / 5 / 6 线**四档一律 289 个概念**（`concept_map.csv` 5,588 行聚合，成分 ≥5 只的正好 289）
+- 屏蔽名单还是那 **102 条**；本版**一条概念都没增删**，纯粹修同步
+- 之后再改 `concept_blocklist.txt`，四档会一起跟上，不会又裂开
+
+### 实测
+
+| 项 | 结果 |
+|---|---|
+| `/api/concept_ma?lines=3/4/5/6` | 全部 `total=289` `len=289` `uniq=289` |
+| `/api/snapshot?name=trend_concept_3/4/5/6` | 全部 `ok=True` `n=289` |
+| 存档闸 · 条数不符（289→269） | `ok=False` `存档已过期` ✔ |
+| 存档闸 · 条数相同名字不同 | `ok=False` ✔（是集合比对，不只比条数） |
+| `trend_sector_4` 存档 | `ok=True` `n_sectors=257` **不受影响** ✔ |
+| 名单加「钒电池」（免重启） | 立刻 288 且该名字消失；还原即回 289 ✔ |
+| 端到端：把基线的 `concept['4'].cur` 砍到 300 后重启 | 接口仍返 `total=289`（闸生效，丢弃快照现算）✔ |
+| JS 语法 | 无 js 改动；两 py 文件 `py_compile` OK |
+
+---
+
 ## v2.381 — 2026-11-24
 
 ### 本版改动

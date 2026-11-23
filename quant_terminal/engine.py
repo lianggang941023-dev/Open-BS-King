@@ -1130,7 +1130,18 @@ def load_concept_blocklist() -> frozenset:
                     names.add(s)
     except Exception:
         pass
+    _old_mt = _BLOCK_CACHE.get('mtime')
     _BLOCK_CACHE.update({'mtime': mt, 'names': frozenset(names)})
+    # v2.382 (用户 m02933): 屏蔽名单一变, 行业/概念趋势的内存缓存必须立刻失效 ——
+    #   否则改完名单后, 只有被同一次 force 覆盖过的那几档会更新, 其余档位继续吐
+    #   旧条数(351/324 等), 表现为「3线351 / 4线5线289 / 6线324」各说各话。
+    #   _sector_ma_cache_clear() 同时清 _SECTOR_MA_CACHE(行业/概念趋势共用) 与 _MH_CACHE,
+    #   与「更新板块」force 走的是同一条清理路径, 语义一致。
+    if _old_mt is not None and _old_mt > 0 and _old_mt != mt:
+        try:
+            _sector_ma_cache_clear()
+        except Exception:
+            pass
     return _BLOCK_CACHE['names']
 
 

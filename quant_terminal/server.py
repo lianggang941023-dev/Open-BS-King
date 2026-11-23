@@ -6301,6 +6301,24 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                     bd, rows, dls, ts0 = ma_baseline_snapshot('concept', lines)
                     if rows and _recent_data_date(bd):   # v2.220: 数据日口径(原为墙钟今日/昨日)
                         snap_rows, snap_ts, base_date, deltas = rows, ts0, bd, dls
+                # v2.382 (用户 m02933): 一致性闸 —— 基线快照可能是**屏蔽名单变更前**算的,
+                #   那样各档会吐旧条数(351/324 等)。这里按当前(已过滤)概念集合校验:
+                #   成分<5只的概念不出现, 与 analyze_concept_ma 的 valid 过滤逐字一致。
+                #   不符就丢弃快照改走现算 —— 保证 3/4/5/6 四档条数永远一致。
+                if snap_rows is not None:
+                    try:
+                        _cnt = {}
+                        for _v in con_map.values():
+                            for _c in (_v or '').split('|'):
+                                _c = _c.strip()
+                                if _c:
+                                    _cnt[_c] = _cnt.get(_c, 0) + 1
+                        _live = set(k for k, v in _cnt.items() if v >= 5)
+                        if len(snap_rows) != len(_live) or \
+                                set((r or {}).get('name') for r in snap_rows) != _live:
+                            snap_rows, snap_ts, base_date, deltas = None, None, None, {}
+                    except Exception:
+                        snap_rows = None
                 if snap_rows is not None:
                     results = snap_rows
                 else:
@@ -6383,7 +6401,28 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                 if not _nm:
                     self._json({'ok': False, 'error': '缺少 name'})
                 else:
-                    self._json(_arc.load_window(_nm))
+                    _w = _arc.load_window(_nm)
+                    # v2.382 (用户 m02933): 概念趋势存档一致性闸 —— 前端点开面板是**先读这份存档**,
+                    #   屏蔽名单改过之后旧存档会一直显示旧条数, 永远轮不到接口现算。
+                    #   集合不符就判过期(ok=False), 前端自然回落到 /api/concept_ma 重算。
+                    if _w.get('ok') and _nm.startswith('trend_concept_'):
+                        try:
+                            _rows = ((_w.get('payload') or {}).get('concepts')) or []
+                            _, _cm2 = load_industry_concept_maps()
+                            _c2 = {}
+                            for _v in _cm2.values():
+                                for _c in (_v or '').split('|'):
+                                    _c = _c.strip()
+                                    if _c:
+                                        _c2[_c] = _c2.get(_c, 0) + 1
+                            _live2 = set(k for k, v in _c2.items() if v >= 5)
+                            if len(_rows) != len(_live2) or \
+                                    set((r or {}).get('name') for r in _rows) != _live2:
+                                _w = {'ok': False, 'name': _nm,
+                                      'error': '存档已过期(概念名单已变更), 正在重算'}
+                        except Exception:
+                            pass
+                    self._json(_w)
 
             elif path == '/api/archive/scans':
                 """v2.323: 竞价打板归档清单（按日汇总 or 逐次明细）"""
