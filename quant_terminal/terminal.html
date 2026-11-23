@@ -22303,7 +22303,7 @@ function regWdCell(curPct, prevPct){
 
 function regWdColor(state, delta, res){
   /* 按好坏染色 + 震荡淡黄。delta 为 null 时返回灰。
-     v2.379e: res = 该格的分辨率(个百分点) = 100 / 该星期样本天数。
+     v2.379: res = 该格的分辨率(个百分点) = 100 / 该星期样本天数。
               |delta| < res 说明连"一整天"都不到, 属于量化噪声 → 不着好坏色。 */
   if (delta == null) return 'var(--tx3)';
   if (res && Math.abs(delta) < res) return 'var(--tx3)';   // 不足一天, 不判好坏
@@ -22322,7 +22322,7 @@ function regWdColor(state, delta, res){
 }
 
 async function regWdLoad(){
-  /* v2.379b: 只给星期效应模块用。days=1000 走 regime_cache.json, 热缓存秒回。 */
+  /* v2.379: 只给星期效应模块用。days=1000 走 regime_cache.json, 热缓存秒回。 */
   if (REG.wdLoading) return;
   if (REG.wdRows && REG.wdRows.length >= 500) return;
   REG.wdLoading = true;
@@ -22345,7 +22345,7 @@ async function regWdLoad(){
 
 function regWdEffect(rs){
   var box = $('reg-wd-box'); if (!box) return;
-  // v2.379b: 优先用本模块自己拉的 1000 天(顶部区间按钮只给 250/500/1000, 不一定够两窗)
+  // v2.379: 优先用本模块自己拉的 1000 天(顶部区间按钮只给 250/500/1000, 不一定够两窗)
   if (REG.wdRows && REG.wdRows.length) rs = REG.wdRows;
   rs = rs || [];
   if (!rs.length) { box.innerHTML = ''; return; }
@@ -22381,7 +22381,7 @@ function regWdEffect(rs){
     var cur  = rs.slice(rs.length - n, rs.length);
     var pc = regWdStat(prev), cc = regWdStat(cur);
 
-    // v2.379d: 标题挂 tooltip —— 让人能看见这两个窗口到底是哪一段、各有几天
+    // v2.379: 标题挂 tooltip —— 让人能看见这两个窗口到底是哪一段、各有几天
     var _dCur  = cur[0] ? cur[0].date : '';
     var _dCurE = cur[cur.length - 1] ? cur[cur.length - 1].date : '';
     var _dPrv  = prev[0] ? prev[0].date : '';
@@ -22408,7 +22408,7 @@ function regWdEffect(rs){
 
     for (var w = 0; w < 5; w++) {
       var nCur = cc.tot[w] || 0, nPrev = pc.tot[w] || 0;
-      // v2.379e: 分辨率 —— 该星期每 1 天等于多少个百分点
+      // v2.379: 分辨率 —— 该星期每 1 天等于多少个百分点
       var _res = 100 / Math.max(1, Math.min(nCur, nPrev));
       h += '<tr>'
          +   '<td data-bs-tip="' + escAttr(wk[w] + ' 样本\n近' + n + '交易日: ' + nCur + ' 天'
