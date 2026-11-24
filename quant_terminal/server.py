@@ -2276,6 +2276,151 @@ def in_auction_window():
 #   那两个只给"没有 git 时的 zip 兜底"用, 绝大多数更新走不到, 顶层的 import 成本与
 #   与其他模块的耦合都没必要。函数内 import 是 Python 官方认可的写法。
 
+# ══ v2.386 (2026-11-25 用户 m04205) 数据同步 —— 代码/数据分开拉 ══
+#   用户原话:「我们这个项目应该是由代码和数据两部分组成吧？更新版本的时候拉取代码和数据,
+#   全部同步, 但是如果点击数据同步, 则只拉取数据同步到本地。」
+#   ⇒ 「更新版本」= 代码 + 数据 (git pull 本来就是原子的整仓; zip 通道改成 want='all')
+#     「数据同步」= 只动 kline_data/ 与 dragon_data/, 一个代码字节都不碰
+#   🔴 数据同步绝不动: quant_terminal/*.py|*.html|*.js、VERSION、data_sources.json、
+#      concept_blocklist.txt、watchlist.json、tdx/ 整目录 —— 那是「更新版本」或用户自己的事。
+_DATA_DIRS = ('kline_data', 'dragon_data')
+#   数据目录里零星混着几个 .py (import_ths_snapshot.py / fetch_holder_num.py) —— 那是代码,
+#   数据同步不许写它们, 否则「只同步数据」会静默改掉脚本。
+_DATA_SKIP_SUFFIX = ('.py', '.pyc', '.html', '.js', '.vbs', '.css', '.ico')
+
+
+def _data_is_data(rel):
+    """rel(仓库相对路径) 是不是"数据" —— 只认 kline_data/ 与 dragon_data/ 下的非代码文件。"""
+    r = (rel or '').replace('\\', '/').strip()
+    if not r:
+        return False
+    if not any(r == d or r.startswith(d + '/') for d in _DATA_DIRS):
+        return False
+    if r.lower().endswith(_DATA_SKIP_SUFFIX):
+        return False
+    return True
+
+
+def _data_last_date_text(txt):
+    """从一段 CSV 文本里取最后一根 K 线的日期。空/坏数据返回 ''。"""
+    last = ''
+    for line in (txt or '').splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.lower().startswith('date,'):
+            continue
+        d = s.split(',')[0].strip()
+        if len(d) == 10 and d[4] == '-' and d[7] == '-':
+            last = d
+    return last
+
+
+def _data_last_date(base):
+    """本地数据新鲜度 = kline_data/index_daily/SH000001.csv 的最后一根 K 线日期。
+
+    🔴 为什么用上证指数的末根, 而不是扫 5591 只票: 指数和个股由同一条 Tushare 导出链路写,
+       日期一致; 扫全市场要读 360 MB, 每次点按钮都卡 3 秒不值得。
+       取不到就退回 daily/ 里前 40 个文件的最大日期(极端情况下仍能给出一个数)。
+    """
+    p = os.path.join(base, 'kline_data', 'index_daily', 'SH000001.csv')
+    try:
+        with io.open(p, 'r', encoding='utf-8', errors='replace') as f:
+            d = _data_last_date_text(f.read())
+        if d:
+            return d
+    except Exception:
+        pass
+    best = ''
+    dd = os.path.join(base, 'kline_data', 'daily')
+    try:
+        names = sorted(os.listdir(dd))[:40]
+    except Exception:
+        names = []
+    for n in names:
+        if not n.lower().endswith('.csv'):
+            continue
+        try:
+            with io.open(os.path.join(dd, n), 'r', encoding='utf-8', errors='replace') as f:
+                d = _data_last_date_text(f.read())
+            if d > best:
+                best = d
+        except Exception:
+            pass
+    return best
+
+
+def _zip_data_date(zf):
+    """zip 包里的数据日 —— 读 kline_data/index_daily/SH000001.csv 的末行。"""
+    try:
+        for n in zf.namelist():
+            ln = str(n or '').replace('\\', '/')
+            if ln.endswith('/kline_data/index_daily/SH000001.csv'):
+                return _data_last_date_text(zf.read(n).decode('utf-8', 'replace'))
+    except Exception:
+        pass
+    return ''
+
+
+def _clear_data_caches():
+    """数据落盘后清掉**进程内**的行情缓存。
+
+    🔴 为什么必须有这一步: 8799 是常驻进程, 各模块把 CSV 读进内存后按 TTL/mtime 缓存。
+       数据同步只改磁盘、不重启服务 ⇒ 不清缓存的话, 用户刷新页面看到的还是旧行情,
+       会以为「同步按钮没生效」。这里按「数据一变, 缓存全废」逐模块清一遍。
+       每条单独 try —— 某个模块将来改名/删了, 不能把整个接口带崩。
+    """
+    done = []
+    try:
+        _sector_ma_cache_clear()          # 行业/概念趋势共用 (含 _MH_CACHE)
+        done.append('ma')
+    except Exception:
+        pass
+    try:
+        import quant_terminal.engine as _E
+        _E._CAL_CACHE = {'key': None, 'cal': []}       # 交易日历(最关键: 决定"落后几天")
+        _E._SECTOR_RT_CACHE['ts'] = 0.0
+        _E._SECTOR_RET_CACHE.clear()
+        _E._SIDX_ALIGN_CACHE.clear()
+        _E._MA_BASELINE_CACHE = None
+        _E._index_hist_cache = {'ts': 0.0, 'data': None}
+        done.append('engine')
+    except Exception:
+        pass
+    try:
+        _rg._C['ts'] = 0.0                             # 市场环境 1000 日
+        _rg._C['rows'] = None
+        done.append('regime')
+    except Exception:
+        pass
+    try:
+        from quant_terminal import sector_kline as _sk
+        _sk._OV_CACHE.update({'ts': 0.0, 'd': {}})
+        _sk._ZDF_CACHE.update({'t': 0.0, 'd': None})
+        _sk._MEM_CACHE.update({'t': 0.0, 'd': None})
+        _sk._TICK_CACHE.update({'t': 0.0, 'd': None})
+        _sk._NM_CACHE.update({'ts': 0.0, 'exact': {}, 'norm': {}})
+        done.append('sector_kline')
+    except Exception:
+        pass
+    try:
+        mcap._CACHE['at'] = 0.0
+        turnover._CACHE['mtime'] = -1.0
+        macro_daily._CACHE['mtime'] = -1.0
+        _pr._DAY_CACHE.clear()
+        _eb._SER_CACHE.clear()
+        done.append('misc')
+    except Exception:
+        pass
+    try:
+        from quant_terminal import board_rank as _br2
+        _br2._CACHE['ts'] = 0.0
+        done.append('board_rank')
+    except Exception:
+        pass
+    return done
+
+
 def _up_zip_guard():
     """zip 兜底前的版本护栏 —— 返回 {'ok':True} 表示"远端确实更新，可以覆盖"。
 
@@ -2340,18 +2485,22 @@ def _up_rt_specs(paths):
     return out[:80]          # 再兜一层, 免得极端情况下命令行过长
 
 
-def _up_zip_update(base, why=''):
-    """没有可用 git 时的兜底更新: 下载 GitHub 的 main.zip, **只覆盖代码文件**。
+def _up_zip_update(base, why='', want='code'):
+    """没有可用 git 时的兜底更新: 下载 GitHub 的 main.zip, 按 want 决定覆盖哪些文件。
+
+    v2.386 (用户 m04205): 加 want —— 「更新版本」传 'all'(代码+数据),
+    「数据同步」传 'data'(只 kline_data/ 与 dragon_data/)。
+    老调用点不传 = 'code', 与改动前逐字节一致。
 
     只动这些后缀: .py .html .js .vbs .ico .css (+ 根目录 VERSION)
     绝不动:
       quant_terminal/data_sources.json  —— 里面是真 Key(被 git 跟踪, 覆盖就把 Key 冲了)
       quant_terminal/concept_blocklist.txt / watchlist.json —— 用户自己维护的配置
-      kline_data/ data_archive/ dragon_data/ 选股池/ —— 全部行情与归档数据
       会话状态.md / *.bat —— 用户侧文档与启动脚本
 
     被覆盖的原文件先整套备份到 <base>/_bak_zip_<时间戳>/ 下(保留相对路径),
     万一新代码有问题, 用户能自己拷回去。
+    v2.386: 备份**只针对代码文件** —— 数据文件几百 MB 且每天重生成, 备份它们纯属浪费磁盘。
     """
     import zipfile
     import tempfile
@@ -2368,6 +2517,7 @@ def _up_zip_update(base, why=''):
                 'msg': '下载更新包失败（%s）：%s' % (why or '无 git', err or '空响应')}
 
     keep = ('.py', '.html', '.js', '.vbs', '.ico', '.css')
+    _what = {'data': '数据文件', 'all': '代码/数据文件'}.get(want, '代码文件')
     stamp = time.strftime('%Y%m%d_%H%M%S')
     bak = os.path.join(base, '_bak_zip_%s' % stamp)
     n_same = n_write = n_skip = 0
@@ -2382,26 +2532,43 @@ def _up_zip_update(base, why=''):
                 'msg': '更新包解压失败：%s' % _e}
     try:
         names = zf.namelist()
+        # v2.386: 数据降级护栏 —— 本地数据日比包里的还新就一个字节都不写
+        #   (自用版比 GitHub 多跑几天时, 同步不该把本机较新的行情覆盖成旧版)
+        _loc_d = _data_last_date(base) if want in ('data', 'all') else ''
+        _zip_d = _zip_data_date(zf) if want in ('data', 'all') else ''
+        _skip_data = bool(_loc_d and _zip_d and _loc_d > _zip_d)
         for n in names:
             nm = str(n or '').replace('\\', '/')
             if nm.endswith('/'):
                 continue
             low = nm.lower()
-            take = low.endswith(keep) or nm.upper().endswith('/VERSION') or nm.upper() == 'VERSION'
-            if not take:
-                continue
             parts = [x for x in nm.split('/') if x]
             if len(parts) < 2:
                 continue
             rel = '/'.join(parts[1:])            # 去掉 "Open-BS-King-main/" 这一层
-            if '/' in rel:
-                if not rel.startswith('quant_terminal/'):
-                    n_skip += 1
-                    continue
-            elif rel.upper() != 'VERSION':
+            # 代码 = 原逻辑(keep 后缀 + 必须落在 quant_terminal/ 或根 VERSION)
+            in_keep = (low.endswith(keep) or nm.upper().endswith('/VERSION')
+                       or nm.upper() == 'VERSION')
+            if in_keep and ('/' in rel):
+                is_code = rel.startswith('quant_terminal/')
+            elif in_keep:
+                is_code = (rel.upper() == 'VERSION')
+            else:
+                is_code = False
+            is_data = _data_is_data(rel)
+            if rel in ('quant_terminal/data_sources.json',):
                 n_skip += 1
                 continue
-            if rel in ('quant_terminal/data_sources.json',):
+            if want == 'data':
+                take = is_data
+            elif want == 'all':
+                take = is_code or is_data
+            else:
+                take = is_code
+            if not take:
+                n_skip += 1
+                continue
+            if is_data and _skip_data:
                 n_skip += 1
                 continue
             try:
@@ -2417,7 +2584,7 @@ def _up_zip_update(base, why=''):
             if old == data:
                 n_same += 1
                 continue
-            if old:
+            if old and not is_data:          # v2.386: 数据文件不备份(几百 MB, 每天重生成)
                 bdst = os.path.join(bak, rel.replace('/', os.sep))
                 bdir = os.path.dirname(bdst)
                 if bdir and not os.path.isdir(bdir):
@@ -2447,15 +2614,183 @@ def _up_zip_update(base, why=''):
     if not n_write:
         return {'ok': True, 'changed': False, 'how': 'zip', 'before': '', 'after': '',
                 'version': _ver.current(), 'n_write': 0, 'n_same': n_same,
-                'msg': '已经是最新的（zip 兜底：%d 个代码文件内容一致，用时 %s 秒）'
-                       % (n_same, secs)}
+                'want': want, 'data_date': _zip_d or _loc_d,
+                'msg': '已经是最新的（zip 兜底：%d 个%s内容一致，用时 %s 秒）'
+                       % (n_same, _what, secs)}
     head = ', '.join(wrote[:6]) + (' …' if len(wrote) > 6 else '')
+    _dd = ''
+    if want in ('data', 'all'):
+        _after = _data_last_date(base)
+        if _after:
+            _dd = '，数据最新到 %s' % _after
+    _tail = (' —— 刷新页面即可看到新数据（数据更新不用重启服务）'
+             if want == 'data' else ' —— 需要重启终端生效')
+    _bmsg = '' if want == 'data' else ('；原文件备份在 %s' % bak)
     return {'ok': True, 'changed': True, 'how': 'zip', 'before': '', 'after': '',
             'version': ver_new or _ver.current(), 'n_write': n_write, 'n_same': n_same,
-            'backup': bak, 'files': wrote[:40],
-            'msg': '已通过 zip 覆盖更新 %d 个代码文件（%s，用时 %s 秒）：%s —— 需要重启终端生效；'
-                   '原文件备份在 %s'
-                   % (n_write, why or '无 git', secs, head, bak)}
+            'want': want, 'files': wrote[:40],
+            'backup': (bak if want != 'data' else ''),
+            'data_date': _zip_d or '',
+            'msg': '已通过 zip 覆盖更新 %d 个%s（%s，用时 %s 秒）：%s%s%s%s'
+                   % (n_write, _what, why or '无 git', secs, head, _dd, _tail, _bmsg)}
+
+
+def _remote_data_date_http(timeout=20.0):
+    """没有 git 时, 用 raw.githubusercontent 读远端的数据日 —— 只下一个 484 KB 的指数 CSV。
+
+    🔴 为什么必须做这一步: 非 git 用户点「数据同步」, 唯一的下载通道是 codeload 的整仓 zip
+       (实测 142.7 MB / 35.7 秒下载 + 解压, 全程 51.8 秒)。但用户绝大多数点击都是「今天已经
+       是最新了」—— 为了确认这 4 个字去下 143 MB 太荒唐。这里先用 1 秒读一个文件定日期,
+       日期相同就直接返回, 真正需要更新时才走整包下载。
+    """
+    url = ('https://raw.githubusercontent.com/%s/main/kline_data/index_daily/SH000001.csv'
+           % _ver.GH_REPO)
+    try:
+        raw, err = _ver._http_get(url, timeout=timeout, tries=1)
+    except Exception:
+        return ''
+    if not raw:
+        return ''
+    try:
+        txt = raw.decode('utf-8', 'replace') if isinstance(raw, bytes) else str(raw)
+    except Exception:
+        return ''
+    return _data_last_date_text(txt)
+
+
+def _do_data_sync():
+    """v2.386 (2026-11-25 用户 m04205): 「数据同步」—— 只拉行情数据, 不动代码。
+
+    两条通道与「更新版本」完全一致, 差别只在**写哪些文件**:
+      git 副本 → git fetch + git restore --source=origin/main --worktree -- kline_data dragon_data
+                 (增量, 只有变化的文件被重写; 不产生 commit, 不移动 HEAD)
+      非 git   → 下载 GitHub zip, 只解出 kline_data/ 与 dragon_data/
+
+    🔴 三条护栏:
+      ① 数据降级: 本地数据日 > 远端数据日 ⇒ 一个字节都不写(自用版常比 GitHub 新)
+      ② 代码隔绝: quant_terminal/*.py|*.html、VERSION 一律不碰 ⇒ 不需要重启服务
+      ③ 缓存清理: 落盘后清进程内行情缓存, 否则刷新页面还是旧数字
+
+    返回 dict: ok / changed / how / msg / before / after / n_write / secs
+    """
+    import subprocess
+
+    t0 = time.time()
+    base = _ver.BASE_DIR
+    before_d = _data_last_date(base)
+
+    gexe, ghow = '', ''
+    try:
+        gexe, ghow = _ver.find_git()
+    except Exception:
+        gexe, ghow = '', ''
+    isrepo = os.path.isdir(os.path.join(base, '.git'))
+
+    if (not gexe) or (not isrepo):
+        # 措辞不带嵌套括号(下面 msg 模板会再套一层, 双括号很难读)
+        why = '本机找不到 git 命令' if not gexe else '这不是 git 副本, 没有 .git 目录'
+        # 前置: 先便宜地问一句「远端是哪天的数据」, 一样就不下 143 MB 整包
+        try:
+            _rd = _remote_data_date_http()
+        except Exception:
+            _rd = ''
+        if before_d and _rd and before_d >= _rd:
+            _clear_data_caches()
+            return {'ok': True, 'changed': False, 'how': 'http',
+                    'before': before_d, 'after': before_d, 'want': 'data',
+                    'n_write': 0, 'secs': round(time.time() - t0, 1),
+                    'msg': '数据已是最新（本地与 GitHub 都是 %s，没有可同步的内容）'
+                           % before_d}
+        r = _up_zip_update(base, why, want='data')
+        # 🔴 必须直接赋值: _up_zip_update 的返回里已经有 'before'/'after' 这两个键(值为 ''),
+        #    setdefault 只在键缺失时才写, 这里会被静默跳过 -> 前端拿到空日期。
+        r['before'] = before_d
+        r['after'] = _data_last_date(base)
+        r['secs'] = round(time.time() - t0, 1)
+        # 数据同步不备份数据文件(几百 MB), 别把一个不存在的目录写给前端
+        if not os.path.isdir(str(r.get('backup') or '')):
+            r['backup'] = ''
+        _clear_data_caches()
+        return r
+
+    def _git(*args, timeout=600):
+        # 与 _do_git_pull 同一条铁律: 服务是 pythonw 起的, 不加 CREATE_NO_WINDOW 会黑窗一闪
+        return subprocess.run([gexe, '-C', base] + list(args),
+                              capture_output=True, text=True,
+                              encoding='utf-8', errors='replace',
+                              timeout=timeout,
+                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+
+    try:
+        fr = _git('fetch', '--quiet', 'origin', 'main')
+        if fr.returncode != 0:
+            err = (fr.stderr or fr.stdout or '').strip()[:400]
+            return {'ok': False, 'changed': False, 'how': 'git', 'before': before_d,
+                    'after': before_d, 'secs': round(time.time() - t0, 1),
+                    'msg': '连接 GitHub 失败（%s）：%s' % (ghow or 'git', err)}
+
+        # 远端数据日 —— 用 git show 从 origin/main 里读, 不落地任何文件
+        after_d = before_d
+        try:
+            sv = _git('show', 'origin/main:kline_data/index_daily/SH000001.csv', timeout=180)
+            if sv.returncode == 0 and sv.stdout:
+                after_d = _data_last_date_text(sv.stdout) or before_d
+        except Exception:
+            pass
+
+        # ① 降级护栏
+        if before_d and after_d and before_d > after_d:
+            return {'ok': True, 'changed': False, 'how': 'git',
+                    'before': before_d, 'after': before_d,
+                    'secs': round(time.time() - t0, 1),
+                    'msg': '本地数据比 GitHub 上的还新（本地 %s / 远端 %s）—— '
+                           '不执行同步，以免把本地较新的行情覆盖成旧版' % (before_d, after_d)}
+
+        # 🔴 必须比「工作区 vs origin/main」, 不是「HEAD vs origin/main」:
+        #   后者只比提交树, 用户把某个 CSV 改旧了/上次同步中途失败留下半新半旧的文件,
+        #   它都看不出来 -> 会误报「已是最新」而不修。实测踩过这个坑。
+        nm = _git('diff', '--name-only', 'origin/main', '--', *_DATA_DIRS,
+                  timeout=300)
+        files = [x for x in (nm.stdout or '').splitlines() if x.strip()]
+        files = [x for x in files if _data_is_data(x)]
+        if not files:
+            _clear_data_caches()
+            return {'ok': True, 'changed': False, 'how': 'git',
+                    'before': before_d, 'after': after_d, 'n_write': 0,
+                    'secs': round(time.time() - t0, 1),
+                    'msg': '数据已是最新（本地 %s / 远端 %s，没有要更新的文件）'
+                           % (before_d or '—', after_d or '—')}
+
+        # git restore 只改工作区, 不暂存、不产生 commit —— 与 pull 的差别就在这里
+        rr = _git('restore', '--source=origin/main', '--worktree', '--', *_DATA_DIRS,
+                  timeout=900)
+        if rr.returncode != 0:
+            err = (rr.stderr or rr.stdout or '').strip()[:400]
+            return {'ok': False, 'changed': False, 'how': 'git', 'before': before_d,
+                    'after': after_d, 'secs': round(time.time() - t0, 1),
+                    'msg': '写入数据失败：%s' % err}
+
+        now_d = _data_last_date(base) or after_d
+        _clear_data_caches()
+        # 两种情形分开说: ①数据日真的往前推了 ②日期没变, 只是把被改旧/残缺的文件补齐
+        if now_d and before_d and now_d > before_d:
+            _m = '已同步 %d 个数据文件（%s → %s，用时 %s 秒）' % (
+                len(files), before_d, now_d, round(time.time() - t0, 1))
+        else:
+            _m = '已补齐 %d 个数据文件（数据日仍是 %s，用时 %s 秒）' % (
+                len(files), now_d or before_d or '—', round(time.time() - t0, 1))
+        return {'ok': True, 'changed': True, 'how': 'git',
+                'before': before_d, 'after': now_d, 'n_write': len(files),
+                'secs': round(time.time() - t0, 1),
+                'msg': _m + ' —— 刷新页面即可看到新数据（数据更新不用重启服务）'}
+    except subprocess.TimeoutExpired:
+        return {'ok': False, 'changed': False, 'how': 'git', 'before': before_d,
+                'after': before_d, 'secs': round(time.time() - t0, 1),
+                'msg': 'git 操作超时（数据量大时首次同步会比较久），请稍后重试'}
+    except Exception as e:
+        return {'ok': False, 'changed': False, 'how': 'git', 'before': before_d,
+                'after': before_d, 'secs': round(time.time() - t0, 1),
+                'msg': '数据同步出错：%s' % e}
 
 
 def _do_git_pull():
@@ -2501,7 +2836,7 @@ def _do_git_pull():
         #   正是 ok=True/changed=False，只判 ok 会把这条当成放行，照样覆盖本机。
         if (not guard.get('ok')) or (guard.get('changed') is False):
             return guard
-        r = _up_zip_update(base, why)
+        r = _up_zip_update(base, why, want='all')
         r.setdefault('before', '')
         r.setdefault('after', '')
         return r
@@ -2643,7 +2978,7 @@ def _do_git_pull():
         return {'ok': False, 'changed': False, 'how': 'git',
                 'msg': 'git pull 超时（180 秒），请检查网络或梯子', 'before': ''}
     except FileNotFoundError:
-        r = _up_zip_update(base, 'git 可执行文件消失了')
+        r = _up_zip_update(base, 'git 可执行文件消失了', want='all')
         r.setdefault('before', '')
         r.setdefault('after', '')
         return r
@@ -7521,6 +7856,11 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
             #      一半新一半旧最难查。git pull 是原子的，pull 完重启即可。
             #   🔴 本地有未提交改动时**拒绝执行**：那说明用户手改过文件，
             #      强拉会把改动冲掉（这个仓库没有备份机制）。
+            # v2.386 (2026-11-25 用户 m04205): 「数据同步」—— 只拉行情数据, 不动代码。
+            #   与「更新版本」分工: 那个是代码+数据整仓更新, 这个是纯数据增量。
+            if path == '/api/version/data_sync':
+                self._json(_do_data_sync())
+                return
             if path == '/api/version/pull':
                 # v2.351: 返回里 how='git'|'zip', 前端据此说不同的重启提示
                 self._json(_do_git_pull())

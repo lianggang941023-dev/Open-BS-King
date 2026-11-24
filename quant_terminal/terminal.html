@@ -7867,8 +7867,11 @@ async function renderDSWin(){
     //   现在一眼就能看到本机是「git 可用」还是「无 git · 走 zip 覆盖」。
     +'<span id="ds-ver-git" style="color:var(--tx3);font-size:9px"></span>'
     +'<span style="flex:1"></span>'
+    // v2.386 (2026-11-25 用户 m04205): 数据同步 —— 只拉行情数据, 不动代码。
+    //   项目由「代码 + 数据」两部分组成: 更新版本=两者一起, 数据同步=只拉 kline_data/dragon_data。
+    +'<button class="btn sm" onclick="dsDataSync()" style="font-size:9px" title="只同步行情数据 (kline_data / dragon_data), 不动代码与配置 —— 同步完刷新页面即可, 不用重启">数据同步</button>'
     +'<button class="btn sm" onclick="dsVerCheck(1)" style="font-size:9px" title="去 GitHub 查有没有新版本 (优先走 HTTP, 不需要本机装 git)">检查更新</button>'
-    +'<button class="btn sm" onclick="dsVerPull()" style="font-size:9px" title="有 git 且是 git 副本 → git pull; 否则 → 下载 GitHub zip 只覆盖代码文件 (data_sources.json 与 K 线数据一律不动)">更新版本</button>'
+    +'<button class="btn sm" onclick="dsVerPull()" style="font-size:9px" title="有 git 且是 git 副本 → git pull 整仓更新 (代码+数据); 否则 → 下载 GitHub zip 覆盖代码与数据 (data_sources.json 等配置一律不动)">更新版本</button>'
     +'</div>'
     +'<div id="ds-ver-msg" style="font-size:9px;color:var(--tx3);padding:3px 0 0;line-height:14px">正在读取版本…</div>'
     +'</div>';
@@ -7947,11 +7950,12 @@ function dsVerPaint(d){
       gt.textContent='· 无 .git · 走 zip 覆盖';
       gt.style.color='var(--orange)';
       gt.title='本机 git: '+(g.path||'')+(g.how?(' ('+g.how+')'):'')
-              +'\n但这份代码不是 git 副本(没有 .git 目录) ⇒ 「更新版本」会下载 GitHub zip, 只覆盖 .py/.html 等代码文件';
+              +'\n但这份代码不是 git 副本(没有 .git 目录) ⇒ 「更新版本」会下载 GitHub zip, 代码与数据一起覆盖'
+              +'\n「数据同步」只覆盖 kline_data / dragon_data, 不动代码, 不用重启';
     }else{
       gt.textContent='· 无 git · 走 zip 覆盖';
       gt.style.color='var(--orange)';
-      gt.title='本机找不到 git 命令 —— 不影响「检查更新」(走 HTTP)\n「更新版本」会下载 GitHub zip, 只覆盖 .py/.html 等代码文件; data_sources.json 与 kline_data 一律不动';
+      gt.title='本机找不到 git 命令 —— 不影响「检查更新」(走 HTTP)\n「更新版本」会下载 GitHub zip, 代码与数据一起覆盖; data_sources.json 等配置一律不动\n「数据同步」只覆盖 kline_data / dragon_data, 不动代码, 不用重启';
     }
   }
   return msg;
@@ -7973,6 +7977,27 @@ function dsVerCheck(force){
       msg.textContent='本地 '+d.local+' 比远端 '+d.remote+' 还新（自己改过?）';
     }else{ msg.style.color='var(--orange)';
       msg.textContent='查不到远端版本'+(d.err?('：'+d.err):''); }
+  });
+}
+// v2.386 (2026-11-25 用户 m04205): 数据同步 —— 只拉行情数据。
+//   与「更新版本」的分工: 更新版本 = 代码 + 数据整仓更新(要重启);
+//   数据同步 = 只拉 kline_data / dragon_data(不用重启, 刷新页面即可)。
+function dsDataSync(){
+  var msg=$('ds-ver-msg');
+  if(msg){ msg.style.color='var(--tx3)';
+    msg.textContent='正在同步数据…（git 副本走增量, 通常几秒；没装 git 会下载约 143MB 更新包, 最长 5 分钟）'; }
+  post('/api/version/data_sync',{}).then(function(d){
+    if(!d||d._err){ if(msg){msg.style.color='var(--red)';msg.textContent='数据同步失败: '+((d&&d._err)||'未知');} return; }
+    if(!msg) return;
+    msg.style.color = d.ok ? (d.changed?'var(--gold)':'var(--tx2)') : 'var(--red)';
+    msg.textContent = d.msg || (d.ok?'数据已同步':'数据同步失败');
+    // 数据变了: 顺手把市场环境那块重拉一遍(它有自己的 1000 天缓存, 不重拉会显示旧数据)
+    if(d.ok && d.changed){
+      try{ if(typeof window.regLoad==='function') regLoad(true); }catch(e){}
+      // v2.386: 这里原来还会 800ms 后调一次 dsVerCheck(0), 结果把刚显示的
+      //   「已同步/已补齐 N 个数据文件」直接刷成版本检查结果, 用户永远看不到同步结果。
+      //   数据同步不改代码版本, 那次检查毫无意义 —— 去掉, 让结果留在界面上。
+    }
   });
 }
 function dsVerPull(){

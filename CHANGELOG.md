@@ -20,6 +20,58 @@
 ---
 
 ---
+## v2.386 — 2026-11-25
+
+### 新增：设置界面「数据同步」按钮
+
+开源版的仓库是「代码 + 数据」两部分。以前只有「更新版本」一条通道，它会把代码和数据一起拉，
+而很多用户多日不需要更新代码、只想补最新行情 —— 每次都要整仓更新，没必要。
+
+现在设置界面「检查更新」前面多了一个 **「数据同步」** 按钮，三个按钮分工：
+
+| 按钮 | 拉什么 | 要重启吗 |
+|---|---|---|
+| 数据同步 | **只拉行情数据**（`kline_data/` + `dragon_data/`），代码与配置一个字节都不动 | 不用，刷新页面即可 |
+| 检查更新 | 只查版本号（走 HTTP，不需要本机装 git） | —— |
+| 更新版本 | 代码 + 数据**全部同步**（git 副本走 `git pull`；非 git 副本走 zip 覆盖） | 需要，关闭终端重新双击启动 |
+
+### 实现
+
+后端新增 `POST /api/version/data_sync` → `_do_data_sync()`，两条通道：
+
+- **git 副本（快）**：`git fetch` → 用 `git show origin/main:kline_data/index_daily/SH000001.csv`
+  读远端数据日 → 降级护栏 → `git diff --name-only origin/main -- kline_data dragon_data`
+  拿变更清单 → `git restore --source=origin/main --worktree -- kline_data dragon_data`
+  **只改工作区，不暂存、不移动 HEAD**（用户本地若有自己的提交完全不受影响）。
+  实测 1.2 秒。
+- **非 git 副本（走 zip）**：先 HTTP 预检远端数据日，相同就 1 秒返回、**不再下 143 MB 整包**；
+  真的落后才下载 codeload zip，只解 `kline_data/` 与 `dragon_data/`。
+  实测「已是最新」1.1 秒；真的补 1 个文件 25 秒（下载整包 142.7 MB）。
+
+三条护栏：
+
+1. **数据降级保护**：本地数据日比远端还新（自用版比 GitHub 多跑几天）⇒ 一个字节都不写；
+2. **不碰代码**：`_data_is_data()` 只认 `kline_data`/`dragon_data` 下的数据文件，
+   且显式排除 `.py`（这两个目录里混着 `import_ths_snapshot.py` / `fetch_holder_num.py` 两个脚本，绝不能覆盖），
+   同时不动 `VERSION`、`data_sources.json`、`concept_blocklist.txt` 等任何配置；
+3. **落盘后清进程内缓存**：`_clear_data_caches()` 把交易日历 `_CAL_CACHE`、板块/概念均线
+   `_SECTOR_MA_CACHE`、`regime_scan._C`、`mcap/turnover/macro_daily/pe_ratio/equity_bond/board_rank`
+   等十几个模块级缓存一次性清掉，否则刷新页面还是旧数字。
+
+### 修掉的两个 bug
+
+- `git diff HEAD origin/main` **看不见工作区改动**（它只比提交树）：把某只票改回上一版后仍报「已是最新」。
+  改成 `git diff --name-only origin/main -- kline_data dragon_data`（与工作区比）。
+- 数据同步成功后原来还会 800 ms 后调一次版本检查，把刚显示的「已同步 N 个文件」直接刷掉，
+  用户永远看不到同步结果。数据同步不改代码版本，那次检查已去掉。
+
+### 改动文件
+
+- `quant_terminal/server.py`：新增 `_data_is_data` / `_data_last_date` / `_zip_data_date` /
+  `_clear_data_caches` / `_do_data_sync`；`_up_zip_update` 增加 `want` 参数（`code` / `data` / `all`）
+- `quant_terminal/terminal.html`：`#ds-ver-box` 加「数据同步」按钮 + `dsDataSync()`；
+  「更新版本」及 `#ds-ver-git` 两处提示文案改为「代码与数据一起覆盖」
+
 ## v2.385 — 2026-11-25
 
 ### 修的问题
