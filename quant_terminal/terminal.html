@@ -22366,6 +22366,58 @@ function regWdColor(state, delta, res){
   return isGood ? 'var(--up)' : 'var(--dn)';
 }
 
+/* v2.383 (用户 m03192 / m03219 定案): 等样本切窗
+   为什么不再用「末尾连续 n 天」: 一个 30 交易日窗口里, 周一是 6 天、周五可能只有 5 天
+   (节假日分布不均), 分母不同 → 每格分辨率 100/6=16.7 与 100/5=20 混在一起, 横着看就失真。
+   取法: 五种星期各自排一条日期链, 链尾 k 个 = 当前窗口, 再往前 k 个 = 对比窗口。
+   ⇒ 天然满足「多余摘掉」; 某个星期因长假历史上出现得少时, 自动再往前多取几天补足。 */
+function regWdTake(rs, k){
+  if (!(k > 0)) return null;
+  var by = [[], [], [], [], []];
+  for (var i = 0; i < rs.length; i++) {
+    var w = regWdWeekday(rs[i].date);
+    if (w >= 0 && by[w]) by[w].push(rs[i]);
+  }
+  var cur = [], prev = [];
+  for (var j = 0; j < 5; j++) {
+    var a = by[j];
+    if (a.length < k * 2) return null;      // 该星期历史不够两个窗口
+    var cut = a.length - k;                 // 当前窗口起点
+    cur  = cur.concat(a.slice(cut));
+    prev = prev.concat(a.slice(cut - k, cut));
+  }
+  var cmp = function(x, y){ return x.date < y.date ? -1 : (x.date > y.date ? 1 : 0); };
+  cur.sort(cmp); prev.sort(cmp);
+  return { cur: cur, prev: prev };
+}
+
+/* 占比染色 (用户 m03192 给的分档, m03219 确认震荡统一淡黄)
+   强势/偏强 —— 越高越偏多:  <=20% 绿 · (20,25) 黄 · [25,30] 橙 · >30% 红
+   偏弱/弱势 —— 越低越偏多:  <=10% 红 · (10,15] 橙 · (15,20) 黄 · >=20% 绿
+   两套落在同一个色温上: 红 = 偏多(好), 绿 = 偏空(坏), 跟 A 股红涨绿跌同向。
+   震荡没有好坏方向 → 统一淡黄。 */
+function regWdPctColor(state, pct){
+  if (pct == null) return 'var(--tx3)';
+  if (state === 'range') return 'rgba(232,200,60,0.95)';
+  if (REG_WD.goodMap[state] > 0) {
+    if (pct > 30) return 'var(--up)';
+    if (pct >= 25) return 'var(--orange)';
+    if (pct > 20) return 'rgba(232,200,60,0.95)';
+    return 'var(--dn)';
+  }
+  if (pct <= 10) return 'var(--up)';
+  if (pct <= 15) return 'var(--orange)';
+  if (pct < 20) return 'rgba(232,200,60,0.95)';
+  return 'var(--dn)';
+}
+
+/* 数字格式: 最多一位小数, 去掉末尾的 .0 —— 17 -> "17", 2.4 -> "2.4", 45.83 -> "45.8" */
+function regWdNum(v){
+  if (v == null || isNaN(v)) return '--';
+  var s = (Math.round(v * 10) / 10).toFixed(1);
+  return s.replace(/\.0$/, '');
+}
+
 async function regWdLoad(){
   /* v2.379: 只给星期效应模块用。days=1000 走 regime_cache.json, 热缓存秒回。 */
   if (REG.wdLoading) return;
@@ -22403,7 +22455,7 @@ function regWdEffect(rs){
         + 'border-radius:8px;padding:8px 10px;background:var(--c-card);border:1px solid var(--bd)">'
         + '<div style="flex:0 0 auto;display:flex;align-items:baseline;gap:10px;margin-bottom:6px">'
         +   '<span style="font-size:calc(var(--wfs)*0.95);font-weight:600;color:var(--tx1)">星期效应对比</span>'
-        +   '<span style="font-size:calc(var(--wfs)*0.62);color:var(--tx3)">窗口按<b style="color:var(--tx2)">交易日</b>计(不含周末节假日) · 每格 = 近N交易日该星期占比 vs 前N交易日同口径 · 着色按好坏(好=红 坏=绿, 震荡=淡黄) · ≈ 表示不足 1 个交易日(噪声)</span>'
+        +   '<span style="font-size:calc(var(--wfs)*0.62);color:var(--tx3)">窗口按<b style="color:var(--tx2)">交易日</b>计(不含周末节假日) · 每档每个星期取样天数相同(30日档=各6天) · <b style="color:var(--tx1)">大字=本期占比</b>, 按区间染色(越红越偏多) · <b style="color:var(--tx1)">小字=较上一期的变化</b>(好=红 坏=绿) · 悬停看上一期明细</span>'
         +   '<span style="flex:1"></span>'
         +   '<span style="font-size:calc(var(--wfs)*0.62);color:var(--tx3);white-space:nowrap">固定四档 · 不随上方区间切换 · 样本 '
         +   rs.length + ' 个交易日</span>'
@@ -22424,8 +22476,19 @@ function regWdEffect(rs){
          + '</div>';
       continue;
     }
-    var prev = rs.slice(rs.length - n * 2, rs.length - n);
-    var cur  = rs.slice(rs.length - n, rs.length);
+    // v2.383 (用户 m03219): 等样本 —— 每档每个星期各 n/5 天
+    var _k  = Math.floor(n / 5);
+    var _sw = regWdTake(rs, _k);
+    if (!_sw) {
+      h += '<div style="border:1px solid var(--bd);border-radius:6px;padding:8px 10px;min-width:0">'
+         +   '<div style="font-size:calc(var(--wfs)*0.85);font-weight:600;color:var(--tx1);margin-bottom:4px">'
+         +     '近' + n + '日 vs 前' + n + '日</div>'
+         +   '<div style="font-size:calc(var(--wfs)*0.72);color:var(--tx3)">历史不足(某星期凑不满 '
+         +     (_k * 2) + ' 天)</div>'
+         + '</div>';
+      continue;
+    }
+    var prev = _sw.prev, cur = _sw.cur;
     var pc = regWdStat(prev), cc = regWdStat(cur);
 
     // v2.379: 标题挂 tooltip —— 让人能看见这两个窗口到底是哪一段、各有几天
@@ -22434,11 +22497,12 @@ function regWdEffect(rs){
     var _dPrv  = prev[0] ? prev[0].date : '';
     var _dPrvE = prev[prev.length - 1] ? prev[prev.length - 1].date : '';
     var _cardTip = '【全部按交易日计, 不含周末与节假日】'
+                 + '\n【等样本: 星期一到星期五各取 ' + _k + ' 天 —— 五列分母完全相同, 可以直接横着比】'
                  + '\n\n当前窗口 ' + _dCur + ' ~ ' + _dCurE
-                 + '\n  共 ' + cur.length + ' 个交易日, 每个星期约 ' + Math.round(cur.length / 5) + ' 个交易日'
+                 + '\n  周一到周五各 ' + _k + ' 天, 合计 ' + cur.length + ' 个交易日'
                  + '\n对比窗口 ' + _dPrv + ' ~ ' + _dPrvE
-                 + '\n  共 ' + prev.length + ' 个交易日'
-                 + '\n\n⚠ 窗口越短, 单个星期的样本越少(30 交易日档每个星期只有约 6 个), 波动很大';
+                 + '\n  周一到周五各 ' + _k + ' 天, 合计 ' + prev.length + ' 个交易日'
+                 + '\n\n⚠ 1 个交易日在本文档里 = ' + (100 / _k).toFixed(1) + ' 个百分点, 样本越少跳得越狠';
     h += '<div data-bs-tip="' + escAttr(_cardTip) + '" '
        +   'style="border:1px solid var(--bd);border-radius:6px;padding:7px 9px;min-width:0;'
        +   'display:flex;flex-direction:column;min-height:0;cursor:help">'
@@ -22480,11 +22544,13 @@ function regWdEffect(rs){
           continue;
         }
         var dl = a - b;
-        var col = regWdColor(st2, dl, _res);
+        var colD = regWdColor(st2, dl, _res);   // 差值: 老规则(好=红 坏=绿 震荡=淡黄)
+        var colA = regWdPctColor(st2, a);       // 占比: 新规则(按区间分档)
         var _tiny = Math.abs(dl) < _res;
-        var sign = _tiny ? '≈' : (dl > 0 ? '+' : (dl < 0 ? '−' : '±'));
-        var tip = wk[w] + ' ' + regLbl(st2) + '\n前' + n + '日 ' + b.toFixed(1) + '% (' + nPrev + '天)'
-                + '\n近' + n + '日 ' + a.toFixed(1) + '% (' + nCur + '天)'
+        // v2.383 (用户 m03219): 去掉 ≈, 一律写出正负号, 最多一位小数
+        var sign = dl > 0 ? '+' : (dl < 0 ? '−' : '±');
+        var tip = wk[w] + ' ' + regLbl(st2) + '\n上一期 ' + b.toFixed(1) + '% (' + nPrev + '天)'
+                + '\n本  期 ' + a.toFixed(1) + '% (' + nCur + '天)'
                 + '\n变化 ' + (dl > 0 ? '+' : '') + dl.toFixed(1) + ' 个百分点'
                 + (_tiny
                     ? '\n\n⚠ 该星期只有 ' + Math.min(nCur, nPrev) + ' 个样本,'
@@ -22496,10 +22562,11 @@ function regWdEffect(rs){
         h += '<td data-bs-tip="' + escAttr(tip) + '" '
            + 'style="text-align:right;padding:1px 0;line-height:1.22;vertical-align:middle;'
            + 'font-family:ui-monospace,Consolas,monospace;cursor:default">'
-           +   '<div style="font-size:calc(var(--wfs)*0.72);color:var(--tx3);margin-bottom:calc(var(--wfs)*0.30)">'
-           +     b.toFixed(0) + '→' + a.toFixed(0) + '%</div>'
-           +   '<div style="font-size:calc(var(--wfs)*1);color:' + col + ';font-weight:700">'
-           +     sign + Math.abs(dl).toFixed(0) + '</div>'
+           +   '<div style="font-size:calc(var(--wfs)*0.98);color:' + colA + ';font-weight:700;'
+           +     'margin-bottom:calc(var(--wfs)*0.26)">'
+           +     regWdNum(a) + '%</div>'
+           +   '<div style="font-size:calc(var(--wfs)*0.80);color:' + colD + ';font-weight:600;opacity:.95">'
+           +     sign + regWdNum(Math.abs(dl)) + '%</div>'
            + '</td>';
       }
       h += '</tr>';
