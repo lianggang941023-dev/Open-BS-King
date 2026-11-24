@@ -20264,6 +20264,7 @@ document.addEventListener('pointerdown', function(e){
 var REG = {open:false, page:'overview', rows:[], days:250, loading:false,
            chartTrend:null, chartDonut:null, calAll:false, cov:null,
            // v2.379: 星期效应模块专用 —— 固定要 1000 天, 与顶部区间按钮脱钩
+           // v2.385 (用户 m03756): 「↻ 重算」会用最新算出的 rows 就地更新 wdRows(见 regWdMerge)
            wdRows:null, wdLoading:false, wdErr:''};
 
 var REG_COL = {strong:'#ef4444', lean_strong:'#f97316', range:'#6b7280',
@@ -21972,6 +21973,9 @@ async function regLoad(force){
     if(!d || d._err){ regSetMsg('拉取失败: '+((d&&d._err)||''),'err'); return; }
     if(d.ok === false){ regSetMsg('数据不可用: '+(d.error||'未知'),'err'); return; }
     REG.rows = d.rows || [];
+    // v2.385 (用户 m03756): 点了「↻ 重算」就把星期效应/假期效应一起带到最新,
+    //   不用再按 F5。原地合并, 不额外扫 CSV(见 regWdMerge 注释)。
+    if (force) regWdMerge(d.rows || []);
     regSetMsg('', 'ok');
     try{
       var c = await api('/api/regime?what=coverage');
@@ -22013,6 +22017,9 @@ function regPaintRange(){
 function regRenderAll(){
   var rs = REG.rows || [];
   if(!rs.length) return;
+  // v2.385 (用户 m03756): 上面几张卡拉到新的一根K线时, 下面的星期/假期效应跟着走,
+  //   不用等用户去点「↻ 重算」。一致时这一行不做任何事。
+  regWdSync();
   regPaintRange();
   regCards(rs);
   regTimeline(rs);
@@ -22424,10 +22431,43 @@ function regWdNum(v){
   return s.replace(/\.0$/, '');
 }
 
-async function regWdLoad(){
+/* v2.385 (用户 m03756): 把刚算出来的最新 rows 并进 wdRows 尾部。
+   重叠日期用新值覆盖 —— 历史日期只由 K 线决定, 不会变;
+   所以「尾部替换」与「整段重算 1000 天」结果逐格一致, 但省掉一次 5591 个 CSV 的扫描(~20 秒)。 */
+function regWdMerge(fresh){
+  if (!fresh || !fresh.length) return;
+  var old = REG.wdRows || [];
+  if (!old.length) { regWdLoad(); return; }      /* 还没有 1000 天: 走正常拉取 */
+  var by = {}, i, r;
+  for (i = 0; i < old.length; i++) { r = old[i]; if (r && r.date) by[r.date] = r; }
+  for (i = 0; i < fresh.length; i++) { r = fresh[i]; if (r && r.date) by[r.date] = r; }
+  var keys = [];
+  for (var k in by) { if (by.hasOwnProperty(k)) keys.push(k); }
+  keys.sort();
+  var out = [];
+  for (i = 0; i < keys.length; i++) out.push(by[keys[i]]);
+  if (out.length > 1000) out = out.slice(out.length - 1000);   /* 接口上限 1000 天 */
+  REG.wdRows = out;
+  REG.wdErr = '';
+  if (REG.rows && REG.rows.length) regWdEffect(REG.rows);
+}
+
+/* v2.385 (用户 m03756): 让 1000 天的 wdRows 与上面那张卡的 REG.rows 保持在同一天。
+   两边尾日一样就什么都不做; 不一样就把新的并进去。纯内存, 不联网。 */
+function regWdSync(){
+  var a = REG.rows || [], b = REG.wdRows || [];
+  if (!a.length || !b.length) return;                 /* 还没数据: 各走各的加载 */
+  var la = a[a.length - 1].date, lb = b[b.length - 1].date;
+  if (la === lb) return;                              /* 已经在同一天 */
+  /* 上面的卡反而更旧(开机先读的存档秒显) -> 绝不能拿它覆盖 1000 天的新数据 */
+  if (la < lb) return;
+  regWdMerge(a);
+}
+
+async function regWdLoad(force){
   /* v2.379: 只给星期效应模块用。days=1000 走 regime_cache.json, 热缓存秒回。 */
   if (REG.wdLoading) return;
-  if (REG.wdRows && REG.wdRows.length >= 500) return;
+  if (!force && REG.wdRows && REG.wdRows.length >= 500) return;
   REG.wdLoading = true;
   REG.wdErr = '';
   try {
@@ -22879,6 +22919,9 @@ window.regSetRange = regSetRange;
 window.regCalendar = regCalendar;
 window.regWdEffect = regWdEffect;
 window.regWkTab = regWkTab;
+window.regWdMerge = regWdMerge;
+window.regWdSync = regWdSync;
+window.regWdLoad = regWdLoad;
 
 </script>
 
