@@ -22271,6 +22271,7 @@ function regDonut(rs){
    ⚠ A 股习惯红涨绿跌, 所以"好=红"; 这一栏的颜色语义跟涨跌幅一致。 */
 var REG_WD = {
   wins: [30, 60, 120, 250],
+  tab: 'wd',   // v2.384 (用户 m03410): 'wd' = 星期效应对比 / 'hol' = 假期效应
   // 状态列顺序沿用 REG_ORDER: 强势 偏强 震荡 偏弱 弱势
   goodMap: {strong: 1, lean_strong: 1, range: 0, lean_weak: -1, weak: -1}
 };
@@ -22284,14 +22285,19 @@ var regWdFsPrev = 13;
 function regWdFsCalc(){
   var box = $('reg-wd-box');
   if (!box || !box.offsetWidth) return 13;
+  // v2.384 (用户 m03410): 两个 tab 的卡片数/列数/行数都不同, 分开算
+  var isHol = (REG_WD.tab === 'hol');
+  var nCard = isHol ? 3 : 4;
+  var nCol  = isHol ? 3 : 5;
   var secPadX = 20, secPadY = 16;          // section padding: 8px 10px
-  var subH = 26, thH = 20, cardPadX = 18;  // 副标题行 / 表头 / 卡片左右 padding
-  var gap = 8, wkCol = regWdFsPrev * 2.2;  // 卡间距 / 星期列宽(跟字号走)
-  var cardW = (box.offsetWidth - secPadX - gap * 3) / 4;
-  var cellW = (cardW - cardPadX - wkCol) / 5;
-  var rowH  = (box.offsetHeight - secPadY - subH) / 5 - 6;   // 减掉卡片标题+表头+行内 padding
-  var fw = cellW / 3.9;    // 宽度约束: "43→33%" 6 字符 ≈ 3.6em, 留余量
-  var fh = rowH / 3.2;     // 高度约束: 每行上下两行字, 行高 1.3
+  var subH = isHol ? 0 : 26, thH = 20, cardPadX = 18;  // 副标题行 / 表头 / 卡片左右 padding
+  var stripH = isHol ? 42 : 0;             // 假期效应底部那条「纯周末 vs 纯长假」
+  var gap = 8, wkCol = regWdFsPrev * (isHol ? 3.9 : 2.2);  // 卡间距 / 首列宽(跟字号走)
+  var cardW = (box.offsetWidth - secPadX - gap * (nCard - 1)) / nCard;
+  var cellW = (cardW - cardPadX - wkCol) / nCol;
+  var rowH  = (box.offsetHeight - secPadY - subH - stripH) / 5 - 6;  // 减掉卡片标题+表头+行内 padding
+  var fw = cellW / (isHol ? 4.4 : 3.9);    // 宽度约束: "43→33%" 6 字符 ≈ 3.6em, 留余量
+  var fh = rowH / (isHol ? 2.2 : 3.2);     // 高度约束: 每行上下两行字, 行高 1.3
   var fs = Math.min(fw, fh);
   return Math.max(10, Math.min(34, Math.round(fs * 10) / 10));
 }
@@ -22449,19 +22455,37 @@ function regWdEffect(rs){
   // 不够最长窗口 250*2=500 天时, 自己去补一份 1000 天(独立于顶部按钮)
   if (rs.length < 500 && !REG.wdLoading && !REG.wdErr) regWdLoad();
 
-  var wk = ['周一', '周二', '周三', '周四', '周五'];
-  // v2.380 (用户 m02551): flex 纵向 + height:100% 吃掉剩余高度, 字号走 var(--wfs)
+  // v2.384 (用户 m03410): 顶部改成两个按钮切换, 原来那长串说明按用户要求删掉
   var h = '<section style="--wfs:13px;height:100%;min-height:0;display:flex;flex-direction:column;'
         + 'border-radius:8px;padding:8px 10px;background:var(--c-card);border:1px solid var(--bd)">'
-        + '<div style="flex:0 0 auto;display:flex;align-items:baseline;gap:10px;margin-bottom:6px">'
-        +   '<span style="font-size:calc(var(--wfs)*0.95);font-weight:600;color:var(--tx1)">星期效应对比</span>'
-        +   '<span style="font-size:calc(var(--wfs)*0.62);color:var(--tx3)">窗口按<b style="color:var(--tx2)">交易日</b>计(不含周末节假日) · 每档每个星期取样天数相同(30日档=各6天) · <b style="color:var(--tx1)">大字=本期占比</b>, 按区间染色(越红越偏多) · <b style="color:var(--tx1)">小字=较上一期的变化</b>(好=红 坏=绿) · 悬停看上一期明细</span>'
+        + '<div style="flex:0 0 auto;display:flex;align-items:center;gap:6px;margin-bottom:6px">'
+        +   '<div class="btn sm' + (REG_WD.tab === 'hol' ? '' : ' on') + '" '
+        +   'onclick="regWkTab(\'wd\')" style="font-size:calc(var(--wfs)*0.78);padding:2px 10px">星期效应对比</div>'
+        +   '<div class="btn sm' + (REG_WD.tab === 'hol' ? ' on' : '') + '" '
+        +   'onclick="regWkTab(\'hol\')" style="font-size:calc(var(--wfs)*0.78);padding:2px 10px">假期效应</div>'
         +   '<span style="flex:1"></span>'
-        +   '<span style="font-size:calc(var(--wfs)*0.62);color:var(--tx3);white-space:nowrap">固定四档 · 不随上方区间切换 · 样本 '
+        +   '<span style="font-size:calc(var(--wfs)*0.62);color:var(--tx3);white-space:nowrap">样本 '
         +   rs.length + ' 个交易日</span>'
         + '</div>'
-        + '<div style="flex:1 1 auto;min-height:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px">';
+        + '<div style="flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:8px">'
+        + (REG_WD.tab === 'hol' ? regHolBody(rs) : regWkBody(rs))
+        + '</div></section>';
+  box.innerHTML = h;
+  regWdFsSync();
+  regWdWatch();
+}
 
+/* v2.384 (用户 m03410): 切换 tab —— 只重画, 不重新取数 */
+function regWkTab(t){
+  REG_WD.tab = (t === 'hol') ? 'hol' : 'wd';
+  regWdEffect(REG.wdRows && REG.wdRows.length ? REG.wdRows : REG.rows);
+}
+
+/* 星期效应对比 · 四张等样本卡 (代码自 v2.383 原样搬来, 循环体一字未改) */
+function regWkBody(rs){
+  var wk = ['周一', '周二', '周三', '周四', '周五'];
+  var h = '<div style="flex:1 1 auto;min-height:0;display:grid;'
+        + 'grid-template-columns:repeat(4,minmax(0,1fr));gap:8px">';
   for (var wi = 0; wi < REG_WD.wins.length; wi++) {
     var n = REG_WD.wins[wi];
     if (rs.length < n * 2) {
@@ -22574,10 +22598,223 @@ function regWdEffect(rs){
     h += '</tbody></table></div>';
   }
 
-  h += '</div></section>';
-  box.innerHTML = h;
-  regWdFsSync();
-  regWdWatch();
+  h += '</div>';
+  return h;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   v2.384 (用户 m03410): 假期效应
+
+   口径(用户 m03343 / m03378 定案):
+     「一次休市」= 相邻两个交易日的自然日差 > 1
+        差 2 天 → 单日假(元旦落周中)   差 3 天 → 普通周末   差 ≥4 天 → 多日长假
+     槽位: 节前第2日 = 休市前倒数第 2 个交易日
+           节前第1日 = 休市前最后一个交易日(**含在内**, 早期版本漏掉过它)
+           节后第1日 / 第2日 = 复牌后第 1 / 2 个交易日
+     冲突(某日既是上一个休市的节后、又是下一个休市的节前) → 一律按节前算
+
+   底座数据: regime_cache.json 的 rows (date / state / index_pct / up_count / down_count)
+   ══════════════════════════════════════════════════════════════════════════ */
+
+function regHolGapDays(a, b){
+  return Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 86400000);
+}
+
+function regHolGaps(rs){
+  var out = [];
+  for (var i = 1; i < rs.length; i++) {
+    var dl = regHolGapDays(rs[i-1].date, rs[i].date);
+    if (dl <= 1) continue;
+    out.push({ia: i-1, ib: i, delta: dl,
+              kind: dl === 2 ? 'single' : (dl === 3 ? 'weekend' : 'holiday')});
+  }
+  return out;
+}
+
+function regHolMark(rs, gaps){
+  var n = rs.length, lab = [], src = [], i, g;
+  for (i = 0; i < n; i++) { lab.push([]); src.push([]); }
+  for (g = 0; g < gaps.length; g++) {
+    var gp = gaps[g], ia = gp.ia, ib = gp.ib;
+    if (ia >= 1) { lab[ia-1].push('PRE2'); src[ia-1].push(gp.kind); }
+    lab[ia].push('PRE1'); src[ia].push(gp.kind);
+    if (ib < n)     { lab[ib].push('POST1');   src[ib].push(gp.kind); }
+    if (ib + 1 < n) { lab[ib+1].push('POST2'); src[ib+1].push(gp.kind); }
+  }
+  // 'PRE2'/'PRE1' 第 2 个字符是 'R', 'POST1'/'POST2' 是 'O'
+  for (i = 0; i < n; i++) {
+    var hasPre = false, hasPost = false, k;
+    for (k = 0; k < lab[i].length; k++) {
+      if (lab[i][k].charAt(1) === 'R') hasPre = true; else hasPost = true;
+    }
+    if (hasPre && hasPost) {
+      var nl = [], ns = [];
+      for (k = 0; k < lab[i].length; k++)
+        if (lab[i][k].charAt(1) === 'R') { nl.push(lab[i][k]); ns.push(src[i][k]); }
+      lab[i] = nl; src[i] = ns;
+    }
+  }
+  return {lab: lab, src: src};
+}
+
+function regHolAgg(sel){
+  var n = sel.length;
+  if (!n) return null;
+  var upI = 0, dnI = 0, upC = 0, dnC = 0, good = 0, sumI = 0, i, r, ip;
+  for (i = 0; i < n; i++) {
+    r = sel[i]; ip = (r.index_pct || 0) * 100; sumI += ip;
+    if (ip > 0) upI++; else if (ip < 0) dnI++;
+    upC += (r.up_count || 0); dnC += (r.down_count || 0);
+    if (r.state === 'strong' || r.state === 'lean_strong') good++;
+  }
+  return {n: n, upI: upI, dnI: dnI, avgI: sumI / n,
+          upR: (upC + dnC) ? 100 * upC / (upC + dnC) : 0,
+          goodR: 100 * good / n};
+}
+
+/* 与「全窗口基线」差 ≥2 个百分点才染色 (好=红 坏=绿), 否则中性 */
+function regHolCol(v, base){
+  if (v == null || base == null) return 'var(--tx2)';
+  var d = v - base;
+  if (d >= 2)  return 'var(--up)';
+  if (d <= -2) return 'var(--dn)';
+  return 'var(--tx2)';
+}
+
+/* strictKind: 只取「当天所有标记都来自这一类休市」的样本,
+   避免一个日子既是周末的节前、又是长假的节后那种重复计入。 */
+function regHolPick(rs, lab, src, s0, tags, strictKind){
+  var out = [];
+  for (var i = s0; i < rs.length; i++) {
+    var hit = false, j, k, m;
+    for (j = 0; j < lab[i].length; j++) {
+      var inTag = false;
+      for (k = 0; k < tags.length; k++) if (lab[i][j] === tags[k]) inTag = true;
+      if (!inTag) continue;
+      if (strictKind && src[i][j] !== strictKind) continue;
+      hit = true; break;
+    }
+    if (!hit) continue;
+    if (strictKind) {
+      var ok = true;
+      for (m = 0; m < lab[i].length; m++) if (src[i][m] !== strictKind) ok = false;
+      if (!ok) continue;
+    }
+    out.push(rs[i]);
+  }
+  return out;
+}
+
+function regHolBody(rs){
+  var gaps = regHolGaps(rs), mk = regHolMark(rs, gaps);
+  var lab = mk.lab, src = mk.src, nAll = rs.length;
+
+  var wl = [], seen = {}, cand = [250, 500, nAll], c;
+  for (c = 0; c < cand.length; c++) {
+    var v = cand[c]; if (v > nAll) v = nAll;
+    if (seen['w' + v]) continue;
+    seen['w' + v] = 1; wl.push(v);
+  }
+  var SL = [['PRE2', '节前第2日'], ['PRE1', '节前第1日'],
+            ['POST1', '节后第1日'], ['POST2', '节后第2日']];
+
+  var h = '<div style="flex:1 1 auto;min-height:0;display:grid;grid-template-columns:repeat('
+        + wl.length + ',minmax(0,1fr));gap:8px">';
+
+  for (var wi = 0; wi < wl.length; wi++) {
+    var n = wl[wi], s0 = nAll - n;
+    var base = regHolAgg(rs.slice(s0));
+    var rows = '', i;
+    for (i = 0; i < SL.length; i++) {
+      var a = regHolAgg(regHolPick(rs, lab, src, s0, [SL[i][0]], null));
+      rows += '<tr style="height:18%">'
+            +   '<td data-bs-tip="' + escAttr(SL[i][1] + '\n样本 ' + (a ? a.n : 0) + ' 天'
+                  + '\n只统计落在这个槽位上的交易日(冲突日按节前算)') + '" '
+            +   'style="font-size:calc(var(--wfs)*0.72);color:var(--tx2);white-space:nowrap;'
+            +   'line-height:1.15;vertical-align:middle;cursor:help">' + SL[i][1]
+            +   '<div style="font-size:calc(var(--wfs)*0.58);color:var(--tx3);letter-spacing:-.2px">'
+            +   (a ? a.n : 0) + '天</div></td>';
+      if (!a) {
+        rows += '<td colspan="3" style="font-size:calc(var(--wfs)*0.72);color:var(--tx3);'
+              + 'text-align:right">--</td>';
+      } else {
+        rows += '<td style="font-size:calc(var(--wfs)*0.9);font-weight:700;text-align:right;color:'
+              + regHolCol(a.upR, base.upR) + '">' + regWdNum(a.upR) + '%</td>'
+              + '<td style="font-size:calc(var(--wfs)*0.9);text-align:right;color:'
+              + regHolCol(100 * a.upI / a.n, 100 * base.upI / base.n) + '">'
+              + regWdNum(100 * a.upI / a.n) + '%</td>'
+              + '<td style="font-size:calc(var(--wfs)*0.9);text-align:right;color:'
+              + regHolCol(a.goodR, base.goodR) + '">' + regWdNum(a.goodR) + '%</td>';
+      }
+      rows += '</tr>';
+    }
+    rows += '<tr style="height:18%">'
+          +   '<td style="font-size:calc(var(--wfs)*0.72);color:var(--tx3);white-space:nowrap;'
+          +   'border-top:1px solid var(--bd2)">全窗口'
+          +   '<div style="font-size:calc(var(--wfs)*0.58);color:var(--tx3)">' + n + '天</div></td>'
+          +   '<td style="font-size:calc(var(--wfs)*0.9);text-align:right;color:var(--tx2);'
+          +   'border-top:1px solid var(--bd2)">' + regWdNum(base.upR) + '%</td>'
+          +   '<td style="font-size:calc(var(--wfs)*0.9);text-align:right;color:var(--tx2);'
+          +   'border-top:1px solid var(--bd2)">' + regWdNum(100 * base.upI / base.n) + '%</td>'
+          +   '<td style="font-size:calc(var(--wfs)*0.9);text-align:right;color:var(--tx2);'
+          +   'border-top:1px solid var(--bd2)">' + regWdNum(base.goodR) + '%</td>'
+          + '</tr>';
+
+    var tip = '【假期效应 · 近' + n + '交易日】'
+            + '\n口径: 相邻两个交易日的自然日差 > 1 就算一次休市'
+            + '\n  差 2 天 = 单日假   差 3 天 = 普通周末   差 >=4 天 = 多日长假'
+            + '\n节前第 1 日 = 休市前最后一个交易日(含在内)'
+            + '\n冲突日(既是上一个休市的节后、又是下一个休市的节前) → 按节前算'
+            + '\n\n三列分别与「全窗口」基线比, 差 >=2 个百分点才染色(好=红 坏=绿)';
+    h += '<div data-bs-tip="' + escAttr(tip) + '" style="border:1px solid var(--bd);border-radius:6px;'
+       + 'padding:7px 9px;min-width:0;display:flex;flex-direction:column;min-height:0;cursor:help">'
+       +   '<div style="flex:0 0 auto;font-size:calc(var(--wfs)*0.85);font-weight:600;color:var(--tx1);'
+       +   'margin-bottom:4px">近' + n + '交易日'
+       +   (n === nAll ? '<span style="font-size:calc(var(--wfs)*0.6);color:var(--tx3);'
+       +                 'font-weight:400">（接口上限 ' + nAll + ' 天）</span>' : '')
+       +   '</div>'
+       +   '<table style="width:100%;height:100%;border-collapse:collapse;table-layout:fixed;'
+       +   'flex:1 1 auto;min-height:0">'
+       +     '<thead><tr>'
+       +       '<th style="width:calc(var(--wfs)*3.9);font-size:calc(var(--wfs)*0.58);'
+       +       'color:var(--tx3);text-align:left"></th>'
+       +       '<th style="font-size:calc(var(--wfs)*0.66);font-weight:600;color:var(--tx2);'
+       +       'text-align:right">个股涨%</th>'
+       +       '<th style="font-size:calc(var(--wfs)*0.66);font-weight:600;color:var(--tx2);'
+       +       'text-align:right">指数涨%</th>'
+       +       '<th style="font-size:calc(var(--wfs)*0.66);font-weight:600;color:var(--tx2);'
+       +       'text-align:right">强+偏强%</th>'
+       +     '</tr></thead><tbody>' + rows + '</tbody></table>'
+       + '</div>';
+  }
+  h += '</div>';
+
+  // 底部一条: 纯普通周末 vs 纯多日长假 (近 nAll 个交易日, 只统计来源单一的样本)
+  var kinds = [['weekend', '普通周末'], ['holiday', '多日长假']];
+  var pairs = [['PRE', '节前两日'], ['POST', '节后两日']];
+  h += '<div style="flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px">';
+  for (var kd = 0; kd < kinds.length; kd++) {
+    for (var pp = 0; pp < pairs.length; pp++) {
+      var tags = (pairs[pp][0] === 'PRE') ? ['PRE2', 'PRE1'] : ['POST1', 'POST2'];
+      var ag = regHolAgg(regHolPick(rs, lab, src, 0, tags, kinds[kd][0]));
+      var t2 = kinds[kd][1] + ' · ' + pairs[pp][1] + '\n样本 ' + (ag ? ag.n : 0) + ' 天(近 ' + nAll + ' 个交易日)'
+             + '\n只统计「当天所有标记都来自这一类休市」的样本,'
+             + '\n和长假/周末相连的日子两边都不计, 免得重复。'
+             + '\n显示的是个股上涨家数占比。';
+      h += '<div data-bs-tip="' + escAttr(t2) + '" style="border:1px solid var(--bd);border-radius:6px;'
+         + 'padding:5px 9px;min-width:0;display:flex;align-items:baseline;gap:6px;cursor:help">'
+         +   '<span style="font-size:calc(var(--wfs)*0.64);color:var(--tx3);white-space:nowrap">'
+         +   kinds[kd][1] + '·' + pairs[pp][1] + '</span>'
+         +   '<span style="flex:1"></span>'
+         +   '<span style="font-size:calc(var(--wfs)*0.62);color:var(--tx3)">'
+         +   (ag ? ag.n : 0) + '天</span>'
+         +   '<span style="font-size:calc(var(--wfs)*0.9);font-weight:700;color:var(--tx1)">'
+         +   (ag ? regWdNum(ag.upR) + '%' : '--') + '</span>'
+         + '</div>';
+    }
+  }
+  h += '</div>';
+  return h;
 }
 
 /* ⑤ 日历热力图（按月分组, 周一~周日 7 列） */
@@ -22641,6 +22878,7 @@ window.regLoad = regLoad;
 window.regSetRange = regSetRange;
 window.regCalendar = regCalendar;
 window.regWdEffect = regWdEffect;
+window.regWkTab = regWkTab;
 
 </script>
 
