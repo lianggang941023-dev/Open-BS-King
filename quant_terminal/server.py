@@ -119,6 +119,9 @@ from quant_terminal import pe_ratio as _pr      # v2.370 市盈率走势图（�
 #   候选指数(同花顺全A/中证1000/中证全指/上证50)必须也能走指数通路, 否则点进去
 #   会被当个股 ⇒ 拿 BZ/个股 前缀去查, 结果是别人的数据。
 from quant_terminal import idx_registry as _idxr
+# v2.388 (2026-11-25 用户 m05084): 市场总览新增「宏观指标」页。
+#   抓取/落盘/读取全在 macro_panel 里, 这里只暴露两个路由, 不新增任何业务逻辑。
+from quant_terminal import macro_panel as _mac
 
 PORT = 8799  # 新端口, 不冲突旧的8788
 
@@ -7035,6 +7038,23 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                     pass
                 self._json(_d6)
 
+            elif path == '/api/macro_panel':
+                """v2.388: 宏观指标面板 —— 16 个指标 + 沪深300 对照。
+
+                ★ 只读本地 kline_data/macro/*.csv, 一次网络请求都不发(断网也能看)。
+                抓取走 POST /api/macro_refresh。
+                """
+                try:
+                    _mpv = _mac.view()
+                except Exception as _e:
+                    _mpv = {'ok': False, 'error': '%s: %s' % (type(_e).__name__, str(_e)[:200]),
+                            'items': [], 'groups': [], 'hs300': []}
+                try:
+                    _arc.save_window('macro_panel', _mpv)
+                except Exception:
+                    pass
+                self._json(_mpv)
+
             elif path == '/api/idx_slots':
                 # v2.360 (用户 m38439): 顶栏两格的候选 + 全表名字, 前端一次拿全。
                 #   为什么放后端: 名字/候选若前端再写一份, 就是第七处硬编码。
@@ -7884,6 +7904,46 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
             #   **覆盖式**落盘(force=True)。用户原话:「更新一次写一次, 覆盖前面的数据
             #   而不是不断增量更新」—— archive.save_window 默认有三条去重(内容没变不写、
             #   20 秒内先攒着), 这里必须 force 才能做到"每次都落一份最新的"。
+            if path == '/api/macro_refresh':
+                """v2.388: 后台抓取宏观指标。立刻返回, 前端轮询 /api/macro_panel 看结果。
+
+                为什么后台: 11 个源串行跑实测 61 秒(akshare 底层 py_mini_racer 不能并发),
+                同步等会让浏览器以为卡死。
+                """
+                _busy = bool(_mac.fetching_now())   # v2.388: 自带 300 秒卡死自愈
+                if _busy:
+                    self._json({'ok': True, 'started': False,
+                                'msg': '已有抓取在跑, 请稍候再试',
+                                'fetching': dict(_mac._FETCHING),
+                                'last': dict(_mac._LAST_FETCH)})
+                    return
+                _b = self._read_json_body() or {}
+                _keys = _b.get('keys') or None
+
+                def _bg():
+                    try:
+                        _r = _mac.refresh(keys=_keys)
+                        _mac._LAST_FETCH.update({'at': _mac._now(), 'ok': bool(_r.get('ok')),
+                                                'wrote': _r.get('wrote') or {},
+                                                'errors': _r.get('errors') or {},
+                                                'secs': _r.get('secs')})
+                    except Exception as _e:
+                        _mac._LAST_FETCH.update({'at': _mac._now(), 'ok': False,
+                                                'errors': {'?': '%s: %s' % (type(_e).__name__, str(_e)[:200])}})
+                    finally:
+                        try:
+                            _mac._FETCHING.update({'on': False, 'msg': 'done'})
+                        except Exception:
+                            pass
+                try:
+                    _mac._FETCHING.update({'on': True, 'started': time.time(), 'msg': 'running'})
+                except Exception:
+                    pass
+                threading.Thread(target=_bg, daemon=True).start()
+                self._json({'ok': True, 'started': True,
+                            'msg': '已开始抓取 (11 个源串行, 约 60 秒) —— 稍后自动刷新'})
+                return
+
             if path == '/api/idx_sync':
                 """v2.359: 把 index_daily 里的指数增量补齐（只拉最近 10 根比对/追加）。
 

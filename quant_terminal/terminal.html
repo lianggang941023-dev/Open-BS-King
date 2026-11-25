@@ -19637,6 +19637,48 @@ window.ldrLhbPick = ldrLhbPick; window.ldrLhbInst = ldrLhbInst; window.ldrLhbDep
     </div>
   </div>
 
+  <!-- v2.388 (2026-11-26 用户 m05084): 宏观指标 = 16 张指标卡 + 下方主图 -->
+  <style>
+    #mkt-pane-macro .mac-card{position:relative;overflow:hidden;cursor:pointer;
+      background:var(--bg2);border:1px solid var(--bd);border-radius:4px;padding:3px 5px 2px;
+      display:flex;flex-direction:column;gap:1px;min-width:0}
+    #mkt-pane-macro .mac-card:hover{border-color:var(--bd2)}
+    #mkt-pane-macro .mac-card.on{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold) inset}
+    #mkt-pane-macro .mac-h{display:flex;align-items:center;gap:3px;min-width:0}
+    #mkt-pane-macro .mac-nm{font-size:9.5px;color:var(--tx2);white-space:nowrap;
+      overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+    #mkt-pane-macro .mac-st{font-size:8.5px;color:var(--tx3);white-space:nowrap}
+    #mkt-pane-macro .mac-st.old{color:var(--gold)}
+    #mkt-pane-macro .mac-v{font-size:15px;font-weight:700;line-height:1.05;
+      white-space:nowrap;overflow:hidden}
+    #mkt-pane-macro .mac-u{font-size:9px;font-weight:400;color:var(--tx2);margin-left:1px}
+    #mkt-pane-macro .mac-c{font-size:9px;line-height:1;white-space:nowrap;color:var(--tx3)}
+    #mkt-pane-macro .mac-sp{display:block;width:100%;height:16px;margin-top:1px}
+    #mkt-pane-macro .macro-grp{font-size:9px;color:var(--tx3);margin:0 0 1px 1px;
+      letter-spacing:0.5px;white-space:nowrap}
+    #mkt-pane-macro .macro-col{display:flex;flex-direction:column;gap:4px;min-width:0}
+  </style>
+  <div id="mkt-pane-macro" style="display:none;flex:1;min-height:0;padding:6px;flex-direction:column;gap:5px">
+    <div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">
+      <span style="font-size:12px;font-weight:700;color:var(--gold)">宏观指标</span>
+      <span id="macro-sub" style="font-size:10px;color:var(--tx2)"></span>
+      <span style="flex:1"></span>
+      <span id="macro-msg" style="font-size:10px;color:var(--tx2)"></span>
+      <button class="btn sm" onclick="macroSpy()" id="macro-spy-btn"
+        style="font-size:9px;padding:1px 6px" title="在主图上叠加沪深300(右轴, 已归一到起点)")
+        叠加沪深300</button>
+      <button class="btn sm" onclick="macroRefresh()" id="macro-upd-btn"
+        style="font-size:9px;padding:1px 6px" title="去网上抓最新宏观数据 (11 个源串行, 约 60 秒)">↻ 更新数据</button>
+    </div>
+    <div id="macro-cards" style="flex:0 0 auto;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));
+      gap:6px;align-items:start"></div>
+    <div style="flex:1 1 auto;min-height:0;position:relative">
+      <div id="macro-chart" style="position:absolute;left:0;top:0;right:0;bottom:0"></div>
+      <div id="macro-empty" style="position:absolute;left:0;top:0;right:0;bottom:0;display:none;
+        align-items:center;justify-content:center;font-size:11px;color:var(--tx3)"></div>
+    </div>
+  </div>
+
 </div>
 <div id="rps-win" style="display:none;flex-direction:column;position:fixed;z-index:10020;background:var(--win);border:1px solid var(--bd2);box-shadow:0 0 32px var(--sh-lg);border-radius:6px;overflow:hidden;font-size:10px;color:var(--tx0)">
   <!-- ── 标题栏 ── -->
@@ -20302,19 +20344,21 @@ var REG_ORDER = ['strong','lean_strong','range','lean_weak','weak'];
 function mktSetPage(p){
   // v2.312 (用户 m18508): 三页。点哪个就把哪个移到标签栈最前面。
   // v2.359: 五页白名单 —— 漏一个就会被静默打回「市场总览」
-  p = (p === 'regime' || p === 'phase' || p === 'idxpair' || p === 'idxlist')
-      ? p : 'overview';
+  p = (p === 'regime' || p === 'phase' || p === 'idxpair' || p === 'idxlist'
+       || p === 'macro') ? p : 'overview';
   REG.page = p;
   mktSt.page = p;
   if(typeof phzSt !== 'undefined'){ phzSt.page = p; }
   mktPaintTitle();
   var b = $('mkt-body'), r = $('mkt-pane-regime'), h = $('mkt-pane-phase');
   var ip = $('mkt-pane-idxpair'), il = $('mkt-pane-idxlist');
+  var mc = $('mkt-pane-macro');   /* v2.388 宏观指标 */
   if(b) b.style.display = (p === 'overview') ? 'grid' : 'none';
   if(r) r.style.display = (p === 'regime') ? 'flex' : 'none';
   if(h) h.style.display = (p === 'phase') ? 'flex' : 'none';
   if(ip) ip.style.display = (p === 'idxpair') ? 'flex' : 'none';
   if(il) il.style.display = (p === 'idxlist') ? 'flex' : 'none';
+  if(mc) mc.style.display = (p === 'macro') ? 'flex' : 'none';
   if(p === 'regime'){
     if(!REG.rows.length) regLoad(false);
     else { regPaintRange(); regRenderAll(); }
@@ -20327,6 +20371,9 @@ function mktSetPage(p){
     if(typeof idxPairEnter === 'function') idxPairEnter();
   }else if(p === 'idxlist'){
     if(typeof idxListEnter === 'function') idxListEnter();
+  }else if(p === 'macro'){
+    /* v2.388: 先读本地存档秒显, 抓取是单独的「↻ 更新数据」动作 */
+    if(typeof macroEnter === 'function') macroEnter();
   }
 }
 /* v2.330 (2026-11-17 用户 m24172): 三个标签改成【普通标签】。
@@ -20339,10 +20386,11 @@ function mktSetPage(p){
    ★ mktSt.tabs 这个字段**保留**(只当"当前顺序"记录, 恒等于 MKT_TAB_DEF),
      因为别处(历史代码/调试)可能读它; 但渲染与点击都不再依赖它。 */
 var MKT_TAB_LBL = {overview:'市场总览', regime:'市场环境', phase:'情绪周期',
-                   idxpair:'特色指标', idxlist:'指数一览'};
+                   idxpair:'特色指标', idxlist:'指数一览', macro:'宏观指标'};
 /* v2.359 (2026-11-21 用户 m38119): 新增「特色指标」「指数一览」两页。
    顺序按用户要求排在情绪周期后面; 位置恒定这条规则(v2.330)对这两页同样适用。 */
-var MKT_TAB_DEF = ['overview', 'regime', 'phase', 'idxpair', 'idxlist'];
+/* v2.388 (2026-11-26 用户 m05084): 第 6 页「宏观指标」追加在「指数一览」后面 */
+var MKT_TAB_DEF = ['overview', 'regime', 'phase', 'idxpair', 'idxlist', 'macro'];
 function mktTabTap(p){
   // v2.330: 点一下就切页, 不动顺序 —— 顺序由 mktPaintTitle() 恒按 MKT_TAB_DEF 画。
   mktSt.tabs = MKT_TAB_DEF.slice();
@@ -20375,8 +20423,288 @@ function mktRefresh(){
   /* v2.359: 这两页的数据源是本地存档, ⟳ 只重画 + 重新读盘, 不触发联网重算 */
   else if(mktSt.page === 'idxpair'){ if(typeof idxPairReload === 'function') idxPairReload(1); }
   else if(mktSt.page === 'idxlist'){ if(typeof idxListReload === 'function') idxListReload(1); }
+  /* v2.388: 宏观指标页的 ⟳ 只重新读盘(瞬间), 联网抓取是页内「↻ 更新数据」按钮 */
+  else if(mktSt.page === 'macro'){ if(typeof macroLoad === 'function') macroLoad(true); }
   else mktLoad(true);
 }
+
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   v2.388 (2026-11-26 用户 m05084): 「宏观指标」页
+   ──────────────────────────────────────────────────────────────────────────────
+   ★ 数据全在本地: kline_data/macro/<key>.csv (date,value) 由后端 macro_panel.py
+     抓取并落盘; 前端只读 /api/macro_panel (纯本地读, 一次网络请求都不发)。
+   ★ 为什么这么设计: 宏观数据发布滞后 1~2 个月很常见, 拿旧值当现值是最容易犯的错
+     ⇒ 每张卡都标「数据截止 N 天前」; 月频/季频用 step 图(折线插值会造出不存在的走势)。
+   ★ 抓取单独一个按钮: 11 个源串行实测 61 秒(akshare 底层不能并发), 不能放在渲染路径上。
+   ══════════════════════════════════════════════════════════════════════════════ */
+var MACRO = {data: null, loading: false, sel: 'cn_10y', spy: false, chart: null,
+             pollT: 0, updAt: 0};
+
+function macroEnter(){
+  if(!MACRO.data){ macroLoad(false); }
+  else { macroRender(); }
+}
+
+async function macroLoad(force){
+  if(MACRO.loading) return;
+  MACRO.loading = true;
+  var msg = $('macro-msg');
+  if(msg && !MACRO.data) msg.textContent = '读取中…';
+  try{
+    var d = await api('/api/macro_panel' + (force ? '?force=1' : ''));
+    if(d && d.ok){
+      MACRO.data = d;
+      macroRender();
+    }else{
+      if(msg) msg.textContent = '读取失败: ' + ((d && d.error) || '未知');
+    }
+  }catch(e){
+    if(msg) msg.textContent = '读取失败: ' + e;
+  }finally{
+    MACRO.loading = false;
+  }
+}
+
+/* 迷你走势: 用内联 SVG 而不是 16 个 ECharts 实例 —— 轻量、不用 dispose、能直接吃 CSS 变量 */
+function macroSpark(series, up){
+  if(!series || series.length < 2) return '<svg class="mac-sp"></svg>';
+  var n = series.length, st = Math.max(1, Math.floor(n / 46));
+  var vs = [], i;
+  for(i = n - 1; i >= 0; i -= st) vs.push(series[i][1]);
+  vs.reverse();
+  if(vs.length < 2) return '<svg class="mac-sp"></svg>';
+  var mn = Math.min.apply(null, vs), mx = Math.max.apply(null, vs);
+  var rg = (mx - mn) || 1, W = 100, H = 24, k = vs.length - 1;
+  var pts = [];
+  for(i = 0; i < vs.length; i++){
+    var x = (i / k) * W;
+    var y = H - 2 - ((vs[i] - mn) / rg) * (H - 4);
+    pts.push(x.toFixed(1) + ',' + y.toFixed(1));
+  }
+  var col = up ? 'var(--gold)' : 'var(--cyan)';
+  return '<svg class="mac-sp" viewBox="0 0 100 24" preserveAspectRatio="none">'
+    + '<polyline points="' + pts.join(' ') + '" fill="none" stroke="' + col
+    + '" stroke-width="1.2" vector-effect="non-scaling-stroke"/></svg>';
+}
+
+function macroFmt(it, v){
+  if(v == null || v === '' || isNaN(v)) return '--';
+  var dp = (it.dp == null) ? 2 : it.dp;
+  return (+v).toFixed(dp);
+}
+
+function macroRender(){
+  var d = MACRO.data;
+  var wrap = $('macro-cards'), msg = $('macro-msg'), sub = $('macro-sub');
+  if(!d || !d.items || !d.items.length){
+    if(wrap) wrap.innerHTML = '';
+    if(msg) msg.textContent = '还没有数据 —— 点右上「↻ 更新数据」抓一次';
+    var em = $('macro-empty');
+    if(em){ em.style.display = 'flex'; em.textContent = '还没有宏观数据'; }
+    return;
+  }
+  if(sub){
+    var _st = (d.fetched_at || '').slice(5, 16);
+    sub.textContent = '共 ' + d.items.length + ' 项 · 抓取于 ' + (_st || '--')
+      + ' · 每项标「数据截止」而不是抓取时间';
+  }
+  /* 按 5 个组顺序铺卡; 每组前插一个组名小条(占一整格) */
+  var h = '', gs = d.groups || [], gi, ii, it;
+  for(gi = 0; gi < gs.length; gi++){
+    var arr = [];
+    for(ii = 0; ii < d.items.length; ii++){
+      if(d.items[ii].group === gs[gi]) arr.push(d.items[ii]);
+    }
+    if(!arr.length) continue;
+    h += '<div class="macro-col"><div class="macro-grp">' + mEsc(gs[gi]) + '</div>';
+    for(ii = 0; ii < arr.length; ii++){
+      it = arr[ii];
+      var on = (it.key === MACRO.sel) ? ' on' : '';
+      var stale = (it.stale_days == null) ? '' : (it.stale_days + '天前');
+      var cls = (it.stale_days != null && it.stale_days > 45) ? ' old' : '';
+      var chg = '';
+      if(it.chg != null){
+        var cs = (it.chg > 0 ? '+' : (it.chg < 0 ? '' : '±')) + macroFmt(it, it.chg);
+        var cc = (it.chg > 0) ? 'var(--up)' : (it.chg < 0 ? 'var(--dn)' : 'var(--tx3)');
+        chg = '<span style="color:' + cc + '">' + cs + '</span>';
+      }
+      h += '<div class="mac-card' + on + '" data-mk="' + it.key + '" onclick="macroPick(\'' + it.key + '\')"'
+        + ' data-bs-tip="' + escAttr(it.name + '\n' + (it.note || '')
+            + '\n数据截止 ' + (it.last_date || '--') + ' (' + (stale || '无数据') + ')'
+            + '\n共 ' + it.n + ' 个点 · 源: ' + (it.src || '')) + '">'
+        + '<div class="mac-h"><span class="mac-nm">' + mEsc(it.short || it.name) + '</span>'
+        + '<span class="mac-st' + cls + '">' + (stale || '无') + '</span></div>'
+        + '<div class="mac-v" style="color:' + (it.value == null ? 'var(--tx3)' : 'var(--tx0)') + '">'
+        + macroFmt(it, it.value) + '<span class="mac-u">' + mEsc(it.unit || '') + '</span></div>'
+        + '<div class="mac-c">' + chg + '</div>'
+        + macroSpark(it.series, (it.good === 'up'))
+        + '</div>';
+    }
+    h += '</div>';
+  }
+  if(wrap) wrap.innerHTML = h;
+  if(msg) msg.textContent = '';
+  macroPaint();
+  if(typeof bsConv === 'function'){ try{ bsConv(); }catch(e){} }
+}
+
+function macroPick(k){
+  MACRO.sel = k;
+  var ns = document.querySelectorAll('#macro-cards .mac-card');
+  for(var i = 0; i < ns.length; i++){
+    ns[i].className = 'mac-card' + (ns[i].getAttribute('data-mk') === k ? ' on' : '');
+  }
+  macroPaint();
+}
+
+function macroSpy(){
+  MACRO.spy = !MACRO.spy;
+  var b = $('macro-spy-btn');
+  if(b) b.className = 'btn sm' + (MACRO.spy ? ' on' : '');
+  macroPaint();
+}
+
+function macroPaint(){
+  var d = MACRO.data, box = $('macro-chart'), em = $('macro-empty');
+  if(!d || !d.items) return;
+  var it = null, i;
+  for(i = 0; i < d.items.length; i++){ if(d.items[i].key === MACRO.sel) it = d.items[i]; }
+  if(!it || !it.series || it.series.length < 2){
+    if(em){ em.style.display = 'flex'; em.textContent = '这个指标还没有数据'; }
+    return;
+  }
+  if(em) em.style.display = 'none';
+  if(!box) return;
+  if(typeof readTheme === 'function'){ try{ readTheme(); }catch(e){} }
+  var T = (typeof TH === 'object' && TH) ? TH : {};
+  var cGold = T.gold || '#f0c040', cCyan = T.cyan || '#00c8e0';
+  var cTx2 = T.tx2 || '#8a8a9a', cSplit = T.split || 'rgba(255,255,255,0.06)';
+
+  var dates = [], vals = [];
+  for(i = 0; i < it.series.length; i++){ dates.push(it.series[i][0]); vals.push(it.series[i][1]); }
+
+  var ser = [{
+    name: it.name, type: 'line', data: vals, showSymbol: false, connectNulls: false,
+    step: (it.freq === 'M' || it.freq === 'Q') ? 'end' : false,
+    lineStyle: {width: 1.6, color: cGold}, itemStyle: {color: cGold}
+  }];
+
+  if(MACRO.spy && d.hs300 && d.hs300.length){
+    var mp = {}, j;
+    for(j = 0; j < d.hs300.length; j++) mp[d.hs300[j][0]] = d.hs300[j][1];
+    /* 归一到第一个有值的位置 —— 否则指数点位和宏观指标的量级差太远 */
+    var base = null, sv = [];
+    for(i = 0; i < dates.length; i++){
+      var v = mp[dates[i]];
+      if(v == null){ sv.push(null); continue; }
+      if(base == null) base = v;
+      sv.push(+(v / base * 100 - 100).toFixed(2));
+    }
+    ser.push({
+      name: '沪深300(相对起点%)', type: 'line', data: sv, showSymbol: false,
+      connectNulls: true, yAxisIndex: 1,
+      lineStyle: {width: 1.1, color: cCyan, opacity: 0.85},
+      itemStyle: {color: cCyan}
+    });
+  }
+
+  var opt = {
+    animation: false, backgroundColor: 'transparent',
+    grid: {left: 56, right: MACRO.spy ? 56 : 20, top: 28, bottom: 42},
+    legend: {show: false},
+    tooltip: {
+      trigger: 'axis', axisPointer: {type: 'cross'},
+      backgroundColor: 'rgba(24,24,30,0.94)', borderColor: 'rgba(255,255,255,0.14)',
+      textStyle: {color: '#e0e0f0', fontSize: 10},
+      formatter: function(ps){
+        if(!ps || !ps.length) return '';
+        var s = ps[0].axisValue;
+        for(var q = 0; q < ps.length; q++){
+          var p = ps[q];
+          if(p.value == null) continue;
+          s += '<br/>' + p.marker + p.seriesName + ' '
+             + (q === 0 ? (+p.value).toFixed(it.dp == null ? 2 : it.dp) + (it.unit || '')
+                        : (+p.value).toFixed(2) + '%');
+        }
+        return s;
+      }
+    },
+    xAxis: {
+      type: 'category', data: dates, boundaryGap: false,
+      axisLine: {lineStyle: {color: cTx2}},
+      axisLabel: {color: cTx2, fontSize: 9, hideOverlap: true},
+      axisTick: {show: false}
+    },
+    yAxis: [{
+      type: 'value', scale: true,
+      axisLine: {show: false}, axisTick: {show: false},
+      axisLabel: {color: cTx2, fontSize: 9},
+      splitLine: {lineStyle: {color: cSplit}}
+    }].concat(MACRO.spy ? [{
+      type: 'value', scale: true, position: 'right',
+      axisLine: {show: false}, axisTick: {show: false},
+      axisLabel: {color: cTx2, fontSize: 9, formatter: '{value}%'},
+      splitLine: {show: false}
+    }] : []),
+    dataZoom: [{type: 'inside', start: Math.max(0, 100 - 100 * 900 / Math.max(1, dates.length)),
+                end: 100}],
+    series: ser
+  };
+
+  if(MACRO.chart){ try{ MACRO.chart.dispose(); }catch(e){} MACRO.chart = null; }
+  box.innerHTML = '';
+  MACRO.chart = echarts.init(box);
+  MACRO.chart.setOption(opt, true);
+  try{ MACRO.chart.resize(); }catch(e){}
+}
+
+async function macroRefresh(){
+  var msg = $('macro-msg'), btn = $('macro-upd-btn');
+  if(MACRO.updAt && (Date.now() - MACRO.updAt) < 5000) return;
+  MACRO.updAt = Date.now();
+  try{
+    var r = await post('/api/macro_refresh', {});
+    if(r && r.started){
+      if(msg) msg.textContent = '已开始抓取 (约 60 秒)…';
+      if(btn){ btn.disabled = true; btn.style.opacity = 0.55; }
+      if(MACRO.pollT) clearInterval(MACRO.pollT);
+      var t0 = Date.now();
+      /* v2.388: 必须等 fetched_at **变了** 才算抓完 —— 它一开始就有(上一次的时间),
+         只用「非空」判断会在 8 秒后误报已更新, 而抓取其实还要跑 50 秒。 */
+      var base = (MACRO.data && MACRO.data.fetched_at) || '';
+      MACRO.pollT = setInterval(async function(){
+        var t = Date.now() - t0;
+        try{
+          var s = await api('/api/macro_panel?force=1');
+          if(s && s.ok && s.fetched_at && s.fetched_at !== base && (t > 4000)){
+            clearInterval(MACRO.pollT); MACRO.pollT = 0;
+            MACRO.data = s; macroRender();
+            if(msg) msg.textContent = '已更新 · ' + s.fetched_at.slice(5, 16);
+            if(btn){ btn.disabled = false; btn.style.opacity = 1; }
+          }else if(s && s.ok && !s.fetched_at && t > 8000){
+            /* 首次抓取(本地还没有任何数据): fetched_at 会从空变成时间, 走上面的分支;
+               这里只处理「一直空」的兜底提示, 不判完成 */
+          }else if(msg && t > 4000 && (t % 12000) < 4400){
+            msg.textContent = '抓取中… ' + Math.round(t / 1000) + ' 秒 (11 个源串行)';
+          }
+        }catch(e){}
+        if(t > 180000){
+          clearInterval(MACRO.pollT); MACRO.pollT = 0;
+          if(msg) msg.textContent = '抓取超时, 请稍后重试';
+          if(btn){ btn.disabled = false; btn.style.opacity = 1; }
+        }
+      }, 4000);
+    }else{
+      if(msg) msg.textContent = (r && r.msg) || '未能启动';
+    }
+  }catch(e){
+    if(msg) msg.textContent = '启动失败: ' + e;
+  }
+}
+window.macroEnter = macroEnter; window.macroLoad = macroLoad;
+window.macroRefresh = macroRefresh; window.macroPick = macroPick;
+window.macroSpy = macroSpy;
 
 
 /* ══════════════════════════════════════════════════════════════════════════════
