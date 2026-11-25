@@ -19656,7 +19656,9 @@ window.ldrLhbPick = ldrLhbPick; window.ldrLhbInst = ldrLhbInst; window.ldrLhbDep
     #mkt-pane-macro .mac-sp{display:block;width:100%;height:16px;margin-top:1px}
     #mkt-pane-macro .macro-grp{font-size:9px;color:var(--tx3);margin:0 0 1px 1px;
       letter-spacing:0.5px;white-space:nowrap}
-    #mkt-pane-macro .macro-col{display:flex;flex-direction:column;gap:4px;min-width:0}
+    /* v2.390: 组内可再分小列 —— 列数由 macroRender() 按每组张数算好后内联写入,
+       组名小条用 grid-column:1/-1 横跨本组所有小列 */
+    #mkt-pane-macro .macro-col{display:grid;gap:4px;min-width:0;align-content:start}
   </style>
   <div id="mkt-pane-macro" style="display:none;flex:1;min-height:0;padding:6px;flex-direction:column;gap:5px">
     <div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">
@@ -19669,8 +19671,7 @@ window.ldrLhbPick = ldrLhbPick; window.ldrLhbInst = ldrLhbInst; window.ldrLhbDep
     </div>
     <div id="macro-bench" style="flex:0 0 auto;display:flex;align-items:center;gap:4px;flex-wrap:wrap;
       min-height:18px"></div>
-    <div id="macro-cards" style="flex:0 0 auto;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));
-      gap:6px;align-items:start"></div>
+    <div id="macro-cards" style="flex:0 0 auto;display:grid;gap:6px;align-items:start"></div>
     <div style="flex:1 1 auto;min-height:0;position:relative">
       <div id="macro-chart" style="position:absolute;left:0;top:0;right:0;bottom:0"></div>
       <div id="macro-empty" style="position:absolute;left:0;top:0;right:0;bottom:0;display:none;
@@ -20495,6 +20496,37 @@ function macroFmt(it, v){
   return (+v).toFixed(dp);
 }
 
+/* v2.390 (用户 m05922): 卡片区分栏规划 —— 把「每组固定一列」改成「按张数自动占列」,
+   目标是各列卡片数尽量相等, 把高列顶出来的空白压掉。
+   做法: 枚举总列数 N=5..10, 每组分配 k=round(张数*N/总张数) (至少 1 列),
+        算实际列数 sum(k) 与所需行数 rows=max(ceil(张数/k)),
+        取「空槽数 sum*rows-总张数」最小、且列数靠近 7 的方案。 */
+function macroColPlan(groups, items){
+  var cnt = [], gi, i, n;
+  for(gi = 0; gi < groups.length; gi++){
+    n = 0;
+    for(i = 0; i < items.length; i++){ if(items[i].group === groups[gi]) n++; }
+    cnt.push(n);
+  }
+  var T = items.length;
+  if(!T) return {k: [], cols: 5, rows: 0};
+  var best = null;
+  for(var N = 5; N <= 10; N++){
+    var k = [], sum = 0, rows = 0;
+    for(gi = 0; gi < cnt.length; gi++){
+      var kk = Math.max(1, Math.round(cnt[gi] * N / T));
+      if(kk > cnt[gi]) kk = cnt[gi];
+      k.push(kk); sum += kk;
+      rows = Math.max(rows, Math.ceil(cnt[gi] / kk));
+    }
+    var waste = sum * rows - T;
+    /* 空槽最要紧(×10); 列数偏离 7 次之(×3) —— 太窄卡片看不清、太少又留白 */
+    var score = waste * 10 + Math.abs(sum - 7) * 3;
+    if(!best || score < best.score){ best = {score: score, k: k, cols: sum, rows: rows, waste: waste}; }
+  }
+  return best;
+}
+
 function macroRender(){
   var d = MACRO.data;
   var wrap = $('macro-cards'), msg = $('macro-msg'), sub = $('macro-sub');
@@ -20510,7 +20542,10 @@ function macroRender(){
     sub.textContent = '共 ' + d.items.length + ' 项 · 抓取于 ' + (_st || '--')
       + ' · 每项标「数据截止」而不是抓取时间';
   }
-  /* 按 5 个组顺序铺卡; 每组前插一个组名小条(占一整格) */
+  /* v2.390: 先算分栏方案, 再按方案铺卡(原来是每组固定一列, 高列会把空白顶出来) */
+  var _plan = macroColPlan(d.groups || [], d.items);
+  var _cw = $('macro-cards');
+  if(_cw){ _cw.style.gridTemplateColumns = 'repeat(' + _plan.cols + ',minmax(0,1fr))'; }
   var h = '', gs = d.groups || [], gi, ii, it;
   for(gi = 0; gi < gs.length; gi++){
     var arr = [];
@@ -20518,7 +20553,10 @@ function macroRender(){
       if(d.items[ii].group === gs[gi]) arr.push(d.items[ii]);
     }
     if(!arr.length) continue;
-    h += '<div class="macro-col"><div class="macro-grp">' + mEsc(gs[gi]) + '</div>';
+    var _k = (_plan.k && _plan.k[gi]) || 1;
+    h += '<div class="macro-col" style="grid-column:span ' + _k
+       + ';grid-template-columns:repeat(' + _k + ',minmax(0,1fr))">'
+       + '<div class="macro-grp" style="grid-column:1/-1">' + mEsc(gs[gi]) + '</div>';
     for(ii = 0; ii < arr.length; ii++){
       it = arr[ii];
       var on = (it.key === MACRO.sel) ? ' on' : '';

@@ -20,6 +20,69 @@
 ---
 
 ---
+## v2.390 — 2026-11-26
+
+### 宏观指标：卡片区改成按卡片数自适应分列（消灭下方大片空白）
+
+**需求**（用户 m05922）：「点刷新能抓新数据足够了。看截图，有什么办法可以重新规划一下布局吗，这大面积的空白不好看」
+
+**问题**
+
+原来 `#macro-cards` 写死 `grid-template-columns:repeat(5,minmax(0,1fr))`，**每个分组固定占一整列、竖向堆卡**：
+
+- 利率组 7 张卡（Fed利率 / EFFR / 中债10Y / 美债10Y / 中美利差 / 美债10-2 / LPR1Y）把整行顶到 **479px** 高
+- 通胀 3 张、货币 3 张、海外 3 张、增长只有 2 张 —— 其余四列只用到 2~3 行
+- 结果：卡片区右侧空一大片，主图被压到只有 **343px** 高
+
+**改法**（5 处，`quant_terminal/terminal.html`）
+
+1. `.macro-col` 由 `display:flex;flex-direction:column` 改成 `display:grid;gap:4px;min-width:0;align-content:start` —— 列数改由 JS 内联指定
+2. `#macro-cards` 删掉写死的 5 列，只留 `display:grid;gap:6px;align-items:start`
+3. 新增 `function macroColPlan(groups, items)`：枚举总列数 **N = 5..10**，按卡片数比例算出每组应占几列
+   - `k = Math.max(1, Math.round(cnt[gi] * N / T))`，上限不超过该组卡片数
+   - 行数 `rows = max(ceil(cnt[gi] / k))`、空格数 `waste = sum(k)*rows - T`
+   - 打分 `score = waste*10 + Math.abs(sum(k) - 7)*3`，取最小者
+   - 返回值 `{k, cols, rows, waste}`
+4. `macroRender()` 开头先算 `_plan`，再给容器设 `gridTemplateColumns = repeat(_plan.cols, minmax(0,1fr))`
+5. 组循环体改成 `grid-column:span <k>` + 内部 `grid-template-columns:repeat(<k>, minmax(0,1fr))`，组标题 `grid-column:1/-1`
+
+**效果**（实测 1511×883 视口）
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| `#macro-cards` 高度 | 479 px | **212 px** |
+| `#macro-chart` 高度 | 343 px | **610 px** |
+| 总列数 | 写死 5 | 自适应 **7**（利率 3 + 通胀 1 + 货币 1 + 增长 1 + 海外 1） |
+
+卡片区省下的 267px 全部还给主图，窗口高度不变（883px），所有卡片与主图都在一屏内。
+
+**为什么要自适应而不是写死列数**
+
+- 以后往 `INDICATORS` 里加指标，列宽自己会重算，不用再手调 CSS
+- 窗口宽度变化时也会重算（N 从 5 试到 10）
+- 各组卡片数差距大时（本次利率组 7 张 vs 增长组 2 张）按比例分配，不会出现某列空一半
+
+**已知小瑕疵**
+
+增长组只有 PMI / GDP 两张卡，自适应后那一列底部还会空一格。补一个「社融增速」或「工业增加值」即可填满（尚未做）。
+
+**改动文件**
+
+- `quant_terminal/terminal.html`（1,538,396 → 1,540,261 B，+1,505 字符，CR=0 纯 LF）
+- `VERSION` → v2.390
+- `CHANGELOG.md`（本节）
+
+**验证**
+
+- `_chk286.py` JS 语法检查：**script blocks = 24 / failed = 0**
+- Playwright 实测：`grid-template-columns: repeat(7, minmax(0px,1fr))`；利率组 `span 3`（内部 3 列横排）、其余四组 `span 1`
+- 深浅主题均正常（卡片与主图配色不变）
+- 只改前端 html，**刷新即生效，不用重启服务**
+
+**数据同步**
+
+本次一并把 `kline_data/` 全量数据推到 GitHub（`kline_data/daily` 5,573 个 + `sector_index` 717 个 + `index_daily` 17 个 + `pe_ratio` 11 个 + `equity_bond` 5 个 + `ths_index` 6 个 + `macro` 21 个 + `dragon_data` 1 个，共 6,332 个文件 420.55 MB），行情从 2026-11-24 推进到 **2026-11-25**。
+
 ## v2.389 — 2026-11-26
 
 ### 宏观指标：叠加走势线改成多条可选 + 新增「美联储利率周期」
