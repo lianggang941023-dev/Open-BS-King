@@ -22,6 +22,9 @@
 · 东财 push2his 曾经能取到美元指数/纳指100, 但 2026-11-25 起对本机 IP 主动断连
   (RemoteDisconnected); 实测多镜像 x 多参数组合 10/10 全失败 ⇒ 不再依赖它。
   纳指100 改用 akshare index_us_stock_sina('.NDX')。
+· 美联储政策利率: 纽约联储 EFFR 接口(2000-07 起, 带 targetRate 区间) —— v2.389 新增
+· 叠加走势线: 上证/创业板/科创综/沪深300 读本地 index_daily;
+  道指/纳指 走 akshare index_us_stock_sina('.DJI'/'.IXIC') —— v2.389 新增
 · 美元指数(DXY) 没找到任何可用的免费历史源: 新浪只有当日快照、腾讯 day 数组为空、
   FRED 超时、stooq 人机校验、yahoo 403 ⇒ 这一项换成**人民币汇率(中行美元牌价)**,
   对 A 股更直接(外资流入/流出压力)。
@@ -57,6 +60,15 @@ _LAST_FETCH = {'at': '', 'ok': None, 'wrote': {}, 'errors': {}, 'secs': 0}
 # ---------------------------------------------------------------------------
 INDICATORS = [
     # ---- 利率 ----
+    dict(key='us_fed_up', group='利率', name='美联储目标利率上限', short='Fed利率',
+         unit='%', freq='D', dp=2, good='down', step=True,
+         src='纽约联储 EFFR 接口 targetRateTo (2008-12 之前美联储只设单一目标利率)',
+         note='全球资金的"出厂价"。加息周期压制所有风险资产估值, 降息周期反过来 —— '
+              '阶梯线就是每次议息会议的决议, 台阶往上=加息、往下=降息'),
+    dict(key='us_effr',  group='利率', name='有效联邦基金利率 EFFR', short='EFFR',
+         unit='%', freq='D', dp=2, good='down',
+         src='纽约联储 EFFR 接口 percentRate',
+         note='市场真实成交的隔夜资金利率。它和上面那条目标利率的差 = 市场对政策松紧的实际感受'),
     dict(key='cn_10y',   group='利率', name='中国10年期国债',   short='中债10Y',
          unit='%', freq='D', dp=2, good='down', src='akshare bond_zh_us_rate',
          note='国内无风险利率之锚 —— 它往下走，股票的相对吸引力就上升'),
@@ -70,7 +82,7 @@ INDICATORS = [
          unit='%', freq='D', dp=2, good='', src='akshare bond_zh_us_rate',
          note='倒挂(负值)历史上是衰退的领先信号，但 2022-23 那次失效了 —— 只可参考'),
     dict(key='lpr1y',    group='利率', name='LPR 1年期',       short='LPR1Y',
-         unit='%', freq='M', dp=2, good='down', src='akshare macro_china_lpr',
+         unit='%', freq='M', dp=2, good='down', step=True, src='akshare macro_china_lpr',
          note='贷款市场报价利率 —— 国内降息周期的直接刻度'),
     # ---- 通胀 ----
     dict(key='cn_cpi',   group='通胀', name='中国CPI同比',      short='CPI',
@@ -113,6 +125,20 @@ INDICATORS = [
 
 BY_KEY = {d['key']: d for d in INDICATORS}
 GROUPS = ['利率', '通胀', '货币', '增长', '海外']
+
+# ---------------------------------------------------------------------------
+# 可叠加的股市走势线（v2.389 用户 m05614：要选定了才显示）
+#   rel   = 本地指数日线（终端自己维护, 不需要抓）
+#   mac   = 落在 kline_data/macro/ 下的序列（由 refresh 抓）
+# ---------------------------------------------------------------------------
+BENCHES = [
+    dict(key='us_dji',   name='道指',     mac='us_dji',  src='akshare index_us_stock_sina(.DJI)'),
+    dict(key='us_ixic',  name='纳指',     mac='us_ixic', src='akshare index_us_stock_sina(.IXIC)'),
+    dict(key='sh000001', name='上证指数', rel='kline_data/index_daily/SH000001.csv', src='本地 index_daily'),
+    dict(key='sz399006', name='创业板指', rel='kline_data/index_daily/SZ399006.csv', src='本地 index_daily'),
+    dict(key='sh000680', name='科创综指', rel='kline_data/index_daily/SH000680.csv', src='本地 index_daily'),
+    dict(key='hs300',    name='沪深300',  rel='kline_data/index_daily/SH000300.csv', src='本地 index_daily'),
+]
 
 # ---------------------------------------------------------------------------
 # 工具
@@ -177,7 +203,10 @@ def _csv_write(path, rows):
     with io.open(tmp, 'w', encoding='utf-8', newline='') as fh:
         fh.write('date,value\n')
         for dt, v in rows:
-            fh.write('%s,%s\n' % (dt, ('%g' % v)))
+            # v2.389: %g 只有 6 位有效数字, 50018.6992 会被砍成 50018.7
+            #   ⇒ 改成一个不会丢精度的写法(最多 6 位小数, 去掉尾巴的 0)
+            _s = ('%.6f' % v).rstrip('0').rstrip('.')
+            fh.write('%s,%s\n' % (dt, _s if _s else '0'))
     os.replace(tmp, path)
 
 
@@ -368,30 +397,81 @@ def _f_sox():
     return {'sox': out}
 
 
-def _f_ndx():
-    """纳指100 —— 新浪美股指数(akshare 封装), 实测 3212 行到 2026-11-24"""
-    df = _ak().index_us_stock_sina(symbol='.NDX')
-    out = []
-    for _, r in df.iterrows():
-        dt = _d(r['date'])
-        v = _num(r['close'])
-        if dt and v is not None:
-            out.append((dt, v))
-    return {'ndx': out}
+def _f_us_idx():
+    """美股指数(新浪, akshare 封装) —— 一次取三条
+
+    .NDX  纳斯达克100  → 指标卡 ndx
+    .DJI  道琼斯工业   → 叠加线 us_dji
+    .IXIC 纳斯达克综合 → 叠加线 us_ixic (日常说的"纳指"就是这个)
+    实测 .NDX 3212 行 / .DJI 5763 行 / .IXIC 5761 行, 都到 2026-11-24
+    """
+    ak = _ak()
+    out = {}
+    for sym, key in (('.NDX', 'ndx'), ('.DJI', 'us_dji'), ('.IXIC', 'us_ixic')):
+        try:
+            df = ak.index_us_stock_sina(symbol=sym)
+        except Exception:
+            continue                      # 单个失败不影响另外两条
+        rows = []
+        for _, r in df.iterrows():
+            dt = _d(r['date'])
+            v = _num(r['close'])
+            if dt and v is not None:
+                rows.append((dt, v))
+        if rows:
+            out[key] = rows
+    return out
 
 
+def _f_fed():
+    """美联储政策利率 —— 纽约联储 EFFR 接口(免费, 无需 key, 不用梯子)
+
+    实测 startDate=2000-01-01 返回 6633 条, 2000-07-03 ~ 2026-11-24, 约 1.5 MB / 1~3 秒。
+    字段: effectiveDate / percentRate / targetRateFrom / targetRateTo / ...
+      · targetRateTo 从 2008-12-16 才开始有 (那天美联储正式改用"区间"制度),
+        之前只有单一目标利率 targetRateFrom ⇒ 回退用它, 保证 2000 年以来连续。
+    返回:
+      us_fed_up  目标利率上限 (%)  → 阶梯图, 台阶=每次议息决议
+      us_effr    实际成交有效利率(%) → 平滑日线
+    ⚠ 这是"政策利率"; 市场收益率(美债10Y)走 akshare bond_zh_us_rate, 别混
+    """
+    import requests
+    s = requests.Session()
+    s.trust_env = False               # 绕开用户的 SSR 系统代理(否则可能挂 100+ 秒)
+    u = ('https://markets.newyorkfed.org/api/rates/unsecured/effr/search.json'
+         '?startDate=2000-01-01&endDate=2099-12-31')
+    r = s.get(u, timeout=40, headers={'User-Agent': 'Mozilla/5.0'})
+    refs = (r.json() or {}).get('refRates') or []
+    up, eff = [], []
+    for x in refs:
+        dt = _d(x.get('effectiveDate'))
+        if not dt:
+            continue
+        v = _num(x.get('targetRateTo'))
+        if v is None:
+            v = _num(x.get('targetRateFrom'))
+        if v is not None:
+            up.append((dt, v))
+        e = _num(x.get('percentRate'))
+        if e is not None:
+            eff.append((dt, e))
+    return {'us_fed_up': up, 'us_effr': eff}
+
+
+# (名字, 函数, 产出的 key) —— 第三个字段用于 refresh(keys=[...]) 的定点刷新
 FETCHERS = [
-    ('中美国债', _f_bond),        # 慢 (6~20s) 但一个源出 3 条
-    ('LPR', _f_lpr),
-    ('中国CPI', _f_cn_cpi),
-    ('中国PPI', _f_cn_ppi),
-    ('中国PMI', _f_cn_pmi),
-    ('货币供应', _f_cn_money),
-    ('中国GDP', _f_cn_gdp),
-    ('美国CPI', _f_us_cpi),
-    ('费半', _f_sox),             # 最慢 (40s)
-    ('人民币汇率', _f_usdcny),
-    ('纳斯达克', _f_ndx),
+    ('中美国债', _f_bond, ('cn_10y', 'us_10y', 'us_curve')),   # 慢 (6~20s) 但一个源出 3 条
+    ('LPR', _f_lpr, ('lpr1y',)),
+    ('中国CPI', _f_cn_cpi, ('cn_cpi',)),
+    ('中国PPI', _f_cn_ppi, ('cn_ppi',)),
+    ('中国PMI', _f_cn_pmi, ('cn_pmi',)),
+    ('货币供应', _f_cn_money, ('cn_m2', 'cn_m1')),
+    ('中国GDP', _f_cn_gdp, ('cn_gdp',)),
+    ('美国CPI', _f_us_cpi, ('us_cpi',)),
+    ('费半', _f_sox, ('sox',)),                                # 最慢 (40s)
+    ('人民币汇率', _f_usdcny, ('usdcny',)),
+    ('美股指数', _f_us_idx, ('ndx', 'us_dji', 'us_ixic')),
+    ('美联储利率', _f_fed, ('us_fed_up', 'us_effr')),
 ]
 
 COMBOS = [
@@ -433,8 +513,14 @@ def refresh(keys=None, log=None):
 
 def _refresh_inner(t0, keys, log, got, errors):
 
+    # v2.389: keys 给定时只跑「产出的 key 与它相交」的源 —— 抓两个新源 6 秒就够,
+    #   不必为了它们把最慢的费半(40s)也跑一遍。keys=None = 全刷(默认)。
+    _want = set(keys) if keys else None
+
     # ⚠ 必须串行: akshare(py_mini_racer) 并发调用会让整个进程段错误, 见 _ak() 注释
-    for name, fn in FETCHERS:
+    for name, fn, oks in FETCHERS:
+        if _want is not None and not (_want & set(oks)):
+            continue
         try:
             res = fn()
         except Exception as e:
@@ -447,10 +533,14 @@ def _refresh_inner(t0, keys, log, got, errors):
         if log:
             log('ok %s' % name)
 
-    # 组合指标
+    # 组合指标（定点刷新时如果两个输入都没重新抓, 就从本地读出来重算, 保证不丢）
     for key, ka, kb in COMBOS:
         if ka in got and kb in got:
             got[key] = _diff_series(got[ka], got[kb])
+        elif got:
+            a, b = _csv_read(_path(ka)), _csv_read(_path(kb))
+            if a and b:
+                got[key] = _diff_series(a, b)
 
     wrote = {}
     with _LOCK:
@@ -463,6 +553,18 @@ def _refresh_inner(t0, keys, log, got, errors):
                 continue
             if len(rows) > DAY_CAP:
                 rows = rows[-DAY_CAP:]
+            _csv_write(_path(key), rows)
+            _CS.pop(_path(key), None)
+            wrote[key] = len(rows)
+        # v2.389: 叠加走势线里的道指/纳指也归 _f_us_idx 抓, 但它们不是"指标卡",
+        #   上面的 INDICATORS 循环不会写它们 ⇒ 这里补一遍, 否则永远是空的。
+        for b in BENCHES:
+            key = b.get('mac')
+            if not key or key not in got:
+                continue
+            rows = _clean(got[key])
+            if not rows:
+                continue
             _csv_write(_path(key), rows)
             _CS.pop(_path(key), None)
             wrote[key] = len(rows)
@@ -509,6 +611,45 @@ def _write_meta(wrote=None):
     os.replace(tmp, META_FILE)
 
 
+def _idx_close(rel, n=DAY_CAP):
+    """读本地指数日线 CSV 的收盘价 → [[date, close]]（升序, 取最后 n 根）"""
+    rows = []
+    p = os.path.join(BASE_DIR, rel)
+    try:
+        with io.open(p, 'r', encoding='utf-8', newline='') as fh:
+            head = fh.readline()
+            cols = [c.strip() for c in head.split(',')]
+            ci = cols.index('close') if 'close' in cols else 2
+            for ln in fh:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                pp = ln.split(',')
+                if len(pp) <= ci:
+                    continue
+                f = _num(pp[ci])
+                dt = _d(pp[0])
+                if dt and f is not None:
+                    rows.append([dt, round(f, 2)])
+    except Exception:
+        return []
+    return rows[-n:]
+
+
+def _bench_series():
+    """可叠加的 6 条走势线（本地优先, 缺的给空 series 让前端自己跳过）"""
+    out = []
+    for b in BENCHES:
+        if b.get('mac'):
+            rows = [[dt, round(v, 2)] for dt, v in _csv_read(_path(b['mac']))][-DAY_CAP:]
+        else:
+            rows = _idx_close(b.get('rel') or '')
+        out.append({'key': b['key'], 'name': b['name'], 'src': b['src'],
+                    'n': len(rows), 'last_date': (rows[-1][0] if rows else ''),
+                    'series': rows})
+    return out
+
+
 def _hs300(n=1400):
     """沪深300 收盘序列 —— 本地 CSV, 只读"""
     rows = []
@@ -553,13 +694,27 @@ def view(full=True):
         last_date, last_v = rows[-1]
         prev_v = rows[-2][1] if len(rows) > 1 else None
         chg = (last_v - prev_v) if (prev_v is not None) else None
+        chg_date = last_date
+        # v2.389: 政策利率(美联储目标利率 / LPR)是台阶, 一天一天看几乎永远是 0。
+        #   改成「上一次真正变动」的口径(变动量 + 变动生效日), 这才是有意义的读数。
+        if d.get('step') and len(rows) > 1:
+            for k in range(len(rows) - 2, -1, -1):
+                if rows[k][1] != last_v:
+                    chg = last_v - rows[k][1]
+                    chg_date = rows[k + 1][0]
+                    break
+            else:
+                chg, chg_date = 0.0, rows[0][0]
         items.append(dict(d, n=len(rows), last_date=last_date,
                           stale_days=_days_since(last_date),
                           value=round(last_v, 6), prev=prev_v,
                           chg=(round(chg, 6) if chg is not None else None),
+                          chg_date=chg_date,
                           series=[[dt, round(v, 6)] for dt, v in rows]))
     return {'ok': True, 'schema': SCHEMA, 'fetched_at': meta.get('fetched_at', ''),
-            'groups': GROUPS, 'items': items, 'hs300': _hs300()}
+            'groups': GROUPS, 'items': items,
+            'benches': _bench_series(),      # v2.389: 6 条可叠加走势线
+            'hs300': _hs300()}               # 保留旧字段, 老前端不会炸
 
 
 FETCH_STUCK_SEC = 300.0     # 超过这个时长还 on=True 就当线程已死, 允许重新发起

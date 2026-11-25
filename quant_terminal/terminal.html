@@ -19664,12 +19664,11 @@ window.ldrLhbPick = ldrLhbPick; window.ldrLhbInst = ldrLhbInst; window.ldrLhbDep
       <span id="macro-sub" style="font-size:10px;color:var(--tx2)"></span>
       <span style="flex:1"></span>
       <span id="macro-msg" style="font-size:10px;color:var(--tx2)"></span>
-      <button class="btn sm" onclick="macroSpy()" id="macro-spy-btn"
-        style="font-size:9px;padding:1px 6px" title="在主图上叠加沪深300(右轴, 已归一到起点)")
-        叠加沪深300</button>
       <button class="btn sm" onclick="macroRefresh()" id="macro-upd-btn"
         style="font-size:9px;padding:1px 6px" title="去网上抓最新宏观数据 (11 个源串行, 约 60 秒)">↻ 更新数据</button>
     </div>
+    <div id="macro-bench" style="flex:0 0 auto;display:flex;align-items:center;gap:4px;flex-wrap:wrap;
+      min-height:18px"></div>
     <div id="macro-cards" style="flex:0 0 auto;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));
       gap:6px;align-items:start"></div>
     <div style="flex:1 1 auto;min-height:0;position:relative">
@@ -20438,7 +20437,9 @@ function mktRefresh(){
      ⇒ 每张卡都标「数据截止 N 天前」; 月频/季频用 step 图(折线插值会造出不存在的走势)。
    ★ 抓取单独一个按钮: 11 个源串行实测 61 秒(akshare 底层不能并发), 不能放在渲染路径上。
    ══════════════════════════════════════════════════════════════════════════════ */
-var MACRO = {data: null, loading: false, sel: 'cn_10y', spy: false, chart: null,
+/* v2.389 (用户 m05614): 叠加走势线从「一个沪深300开关」改成「多条可选, 选定了才显示」。
+   MACRO.bench = 当前勾选的走势线 key 数组(默认带上证指数, 否则单看宏观曲线看不出对应关系)。*/
+var MACRO = {data: null, loading: false, sel: 'cn_10y', bench: ['sh000001'], chart: null,
              pollT: 0, updAt: 0};
 
 function macroEnter(){
@@ -20527,11 +20528,24 @@ function macroRender(){
       if(it.chg != null){
         var cs = (it.chg > 0 ? '+' : (it.chg < 0 ? '' : '±')) + macroFmt(it, it.chg);
         var cc = (it.chg > 0) ? 'var(--up)' : (it.chg < 0 ? 'var(--dn)' : 'var(--tx3)');
-        chg = '<span style="color:' + cc + '">' + cs + '</span>';
+        if(it.step){
+          /* v2.389: 政策利率是台阶 —— 「较昨日」永远是 0, 没意义。
+             改成「上次变动 ±X (生效日)」, 一眼看出现在处在加息还是降息周期。 */
+          var cd = (it.chg_date || '').slice(2, 10);
+          var cs2 = (Math.abs(it.chg) < 1e-9) ? '长期未变' : cs + ' (' + cd + ')';
+          var cc2 = (Math.abs(it.chg) < 1e-9) ? 'var(--tx3)' : cc;
+          chg = '<span style="color:' + cc2 + '">' + cs2 + '</span>';
+        }else{
+          chg = '<span style="color:' + cc + '">' + cs + '</span>';
+        }
       }
       h += '<div class="mac-card' + on + '" data-mk="' + it.key + '" onclick="macroPick(\'' + it.key + '\')"'
         + ' data-bs-tip="' + escAttr(it.name + '\n' + (it.note || '')
             + '\n数据截止 ' + (it.last_date || '--') + ' (' + (stale || '无数据') + ')'
+            + (it.step && it.chg != null
+                ? '\n上次变动 ' + ((it.chg > 0 ? '+' : '') + macroFmt(it, it.chg))
+                  + ' 百分点, ' + (it.chg_date || '') + ' 生效'
+                : '')
             + '\n共 ' + it.n + ' 个点 · 源: ' + (it.src || '')) + '">'
         + '<div class="mac-h"><span class="mac-nm">' + mEsc(it.short || it.name) + '</span>'
         + '<span class="mac-st' + cls + '">' + (stale || '无') + '</span></div>'
@@ -20545,6 +20559,17 @@ function macroRender(){
   }
   if(wrap) wrap.innerHTML = h;
   if(msg) msg.textContent = '';
+  /* 首次渲染时，把「默认勾选但本地没数据」的线剔掉，免得图例里挂一条空线 */
+  if(!MACRO.benchInit && d.benches && d.benches.length){
+    MACRO.benchInit = 1;
+    var ok0 = {}, kk;
+    for(kk = 0; kk < d.benches.length; kk++){ if(d.benches[kk].n >= 2) ok0[d.benches[kk].key] = 1; }
+    var keep = [];
+    for(kk = 0; kk < MACRO.bench.length; kk++){ if(ok0[MACRO.bench[kk]]) keep.push(MACRO.bench[kk]); }
+    if(!keep.length){ keep = ['sh000001']; }
+    MACRO.bench = keep;
+  }
+  macroBenchRender();
   macroPaint();
   if(typeof bsConv === 'function'){ try{ bsConv(); }catch(e){} }
 }
@@ -20558,11 +20583,59 @@ function macroPick(k){
   macroPaint();
 }
 
-function macroSpy(){
-  MACRO.spy = !MACRO.spy;
-  var b = $('macro-spy-btn');
-  if(b) b.className = 'btn sm' + (MACRO.spy ? ' on' : '');
+/* 走势线选择条：一组小按钮，点一下开/关 */
+function macroBenchRender(){
+  var box = $('macro-bench');
+  if(!box) return;
+  var d = MACRO.data;
+  if(!d || !d.benches || !d.benches.length){ box.innerHTML = ''; return; }
+  var h = '<span style="font-size:9px;color:var(--tx3);margin-right:2px">叠加走势</span>';
+  for(var i = 0; i < d.benches.length; i++){
+    var b = d.benches[i];
+    var on = (MACRO.bench.indexOf(b.key) >= 0);
+    var no = (b.n < 2);
+    h += '<button class="btn sm' + (on ? ' on' : '') + '" data-bk="' + b.key + '"'
+      + ' onclick="macroBenchToggle(\'' + b.key + '\')"'
+      + (no ? ' disabled' : '')
+      + ' style="font-size:9px;padding:1px 6px' + (no ? ';opacity:0.4' : '') + '"'
+      + ' data-bs-tip="' + escAttr(b.name + '\n' + b.src
+          + '\n共 ' + b.n + ' 个点 · 截止 ' + (b.last_date || '--')
+          + (no ? '\n还没有数据 —— 点右上「↻ 更新数据」抓一次' : '')) + '">'
+      + mEsc(b.name) + '</button>';
+  }
+  box.innerHTML = h;
+  if(typeof bsConv === 'function'){ try{ bsConv(); }catch(e){} }
+}
+
+function macroBenchToggle(k){
+  /* 没数据的线先自动补抓一次(只抓那一个源), 抓完 macroRefresh 会重新渲染, 用户再点就行 */
+  var d0 = MACRO.data, bb = null;
+  if(d0 && d0.benches){
+    for(var q = 0; q < d0.benches.length; q++){
+      if(d0.benches[q].key === k) bb = d0.benches[q];
+    }
+  }
+  if(bb && bb.n < 2){ macroRefresh([k]); return; }
+  var i = MACRO.bench.indexOf(k);
+  if(i >= 0){ MACRO.bench.splice(i, 1); }
+  else { MACRO.bench.push(k); }
+  var ns = document.querySelectorAll('#macro-bench button[data-bk]');
+  for(var j = 0; j < ns.length; j++){
+    var on = (MACRO.bench.indexOf(ns[j].getAttribute('data-bk')) >= 0);
+    ns[j].className = 'btn sm' + (on ? ' on' : '');
+  }
   macroPaint();
+}
+
+/* 把日频走势线对齐到主指标的横轴：取「截至该日最近的收盘价」
+   —— 月频指标(如PMI)横轴是每月1号，用日期精确匹配会全空。*/
+function macroBenchAlign(series, dates){
+  var out = [], j = 0, last = null;
+  for(var i = 0; i < dates.length; i++){
+    while(j < series.length && series[j][0] <= dates[i]){ last = series[j][1]; j++; }
+    out.push(last);
+  }
+  return out;
 }
 
 function macroPaint(){
@@ -20580,39 +20653,55 @@ function macroPaint(){
   var T = (typeof TH === 'object' && TH) ? TH : {};
   var cGold = T.gold || '#f0c040', cCyan = T.cyan || '#00c8e0';
   var cTx2 = T.tx2 || '#8a8a9a', cSplit = T.split || 'rgba(255,255,255,0.06)';
+  var hasBench = !!(MACRO.bench && MACRO.bench.length);
+  /* 走势线配色：直接读 CSS 变量 —— 浅色主题自动换成深一点的同色系 */
+  var _cs = getComputedStyle(document.documentElement);
+  var gv = function(nm){ return (_cs.getPropertyValue(nm) || '').trim(); };
+  var BC = [gv('--cyan'), gv('--bench-1'), gv('--bench-2'), gv('--bench-3'),
+            gv('--bench-4'), gv('--pink')];
 
   var dates = [], vals = [];
   for(i = 0; i < it.series.length; i++){ dates.push(it.series[i][0]); vals.push(it.series[i][1]); }
 
   var ser = [{
     name: it.name, type: 'line', data: vals, showSymbol: false, connectNulls: false,
-    step: (it.freq === 'M' || it.freq === 'Q') ? 'end' : false,
+    step: (it.step || it.freq === 'M' || it.freq === 'Q') ? 'end' : false,
     lineStyle: {width: 1.6, color: cGold}, itemStyle: {color: cGold}
   }];
 
-  if(MACRO.spy && d.hs300 && d.hs300.length){
-    var mp = {}, j;
-    for(j = 0; j < d.hs300.length; j++) mp[d.hs300[j][0]] = d.hs300[j][1];
-    /* 归一到第一个有值的位置 —— 否则指数点位和宏观指标的量级差太远 */
-    var base = null, sv = [];
-    for(i = 0; i < dates.length; i++){
-      var v = mp[dates[i]];
-      if(v == null){ sv.push(null); continue; }
-      if(base == null) base = v;
-      sv.push(+(v / base * 100 - 100).toFixed(2));
+  if(hasBench && d.benches && d.benches.length){
+    var bm = {}, bi, bt;
+    for(bi = 0; bi < d.benches.length; bi++){ bm[d.benches[bi].key] = d.benches[bi]; }
+    var ncol = 0;
+    for(bi = 0; bi < MACRO.bench.length; bi++){
+      bt = bm[MACRO.bench[bi]];
+      if(!bt || !bt.series || bt.series.length < 2) continue;
+      var raw = macroBenchAlign(bt.series, dates);
+      /* 每条线各自归一到「它自己的第一个有值点」= 相对涨幅%
+         这样 6 条线的量级(50018 / 23733 / 3476)不再打架, 都变成可比涨跌幅 */
+      var base = null, sv = [];
+      for(i = 0; i < raw.length; i++){
+        var v = raw[i];
+        if(v == null){ sv.push(null); continue; }
+        if(base == null) base = v;
+        sv.push(+(v / base * 100 - 100).toFixed(2));
+      }
+      var col = BC[ncol % BC.length] || cCyan;
+      ncol++;
+      ser.push({
+        name: bt.name, type: 'line', data: sv, showSymbol: false,
+        connectNulls: true, yAxisIndex: 1,
+        lineStyle: {width: 1.15, color: col, opacity: 0.9},
+        itemStyle: {color: col}
+      });
     }
-    ser.push({
-      name: '沪深300(相对起点%)', type: 'line', data: sv, showSymbol: false,
-      connectNulls: true, yAxisIndex: 1,
-      lineStyle: {width: 1.1, color: cCyan, opacity: 0.85},
-      itemStyle: {color: cCyan}
-    });
   }
 
   var opt = {
     animation: false, backgroundColor: 'transparent',
-    grid: {left: 56, right: MACRO.spy ? 56 : 20, top: 28, bottom: 42},
-    legend: {show: false},
+    grid: {left: 56, right: hasBench ? 56 : 20, top: hasBench ? 32 : 24, bottom: 42},
+    legend: {show: hasBench, top: 0, itemWidth: 12, itemHeight: 2, itemGap: 8,
+             textStyle: {color: cTx2, fontSize: 9}},
     tooltip: {
       trigger: 'axis', axisPointer: {type: 'cross'},
       backgroundColor: 'rgba(24,24,30,0.94)', borderColor: 'rgba(255,255,255,0.14)',
@@ -20625,7 +20714,7 @@ function macroPaint(){
           if(p.value == null) continue;
           s += '<br/>' + p.marker + p.seriesName + ' '
              + (q === 0 ? (+p.value).toFixed(it.dp == null ? 2 : it.dp) + (it.unit || '')
-                        : (+p.value).toFixed(2) + '%');
+                        : (+p.value).toFixed(2) + '% (相对起点)');
         }
         return s;
       }
@@ -20641,7 +20730,7 @@ function macroPaint(){
       axisLine: {show: false}, axisTick: {show: false},
       axisLabel: {color: cTx2, fontSize: 9},
       splitLine: {lineStyle: {color: cSplit}}
-    }].concat(MACRO.spy ? [{
+    }].concat(hasBench ? [{
       type: 'value', scale: true, position: 'right',
       axisLine: {show: false}, axisTick: {show: false},
       axisLabel: {color: cTx2, fontSize: 9, formatter: '{value}%'},
@@ -20659,14 +20748,18 @@ function macroPaint(){
   try{ MACRO.chart.resize(); }catch(e){}
 }
 
-async function macroRefresh(){
+async function macroRefresh(keys){
+  /* v2.389: keys 给定时只抓产出自这些 key 的源。
+     典型场景 = 叠加走势里的道指/纳指还没抓过 ⇒ 只跑「美股指数」一个源, 5 秒出结果,
+     不用等费城半导体那个 40 秒的源。不传 keys = 全刷(默认「↻ 更新数据」按钮)。*/
   var msg = $('macro-msg'), btn = $('macro-upd-btn');
   if(MACRO.updAt && (Date.now() - MACRO.updAt) < 5000) return;
   MACRO.updAt = Date.now();
+  var _partial = !!(keys && keys.length);
   try{
-    var r = await post('/api/macro_refresh', {});
+    var r = await post('/api/macro_refresh', _partial ? {keys: keys} : {});
     if(r && r.started){
-      if(msg) msg.textContent = '已开始抓取 (约 60 秒)…';
+      if(msg) msg.textContent = _partial ? '正在抓缺失的数据…' : '已开始抓取 (约 60 秒)…';
       if(btn){ btn.disabled = true; btn.style.opacity = 0.55; }
       if(MACRO.pollT) clearInterval(MACRO.pollT);
       var t0 = Date.now();
@@ -20686,7 +20779,8 @@ async function macroRefresh(){
             /* 首次抓取(本地还没有任何数据): fetched_at 会从空变成时间, 走上面的分支;
                这里只处理「一直空」的兜底提示, 不判完成 */
           }else if(msg && t > 4000 && (t % 12000) < 4400){
-            msg.textContent = '抓取中… ' + Math.round(t / 1000) + ' 秒 (11 个源串行)';
+            msg.textContent = '抓取中… ' + Math.round(t / 1000) + ' 秒'
+                              + (_partial ? '' : ' (11 个源串行)');
           }
         }catch(e){}
         if(t > 180000){
@@ -20704,7 +20798,7 @@ async function macroRefresh(){
 }
 window.macroEnter = macroEnter; window.macroLoad = macroLoad;
 window.macroRefresh = macroRefresh; window.macroPick = macroPick;
-window.macroSpy = macroSpy;
+window.macroBenchToggle = macroBenchToggle;
 
 
 /* ══════════════════════════════════════════════════════════════════════════════

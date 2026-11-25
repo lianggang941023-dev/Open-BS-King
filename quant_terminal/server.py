@@ -7940,8 +7940,13 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 threading.Thread(target=_bg, daemon=True).start()
-                self._json({'ok': True, 'started': True,
-                            'msg': '已开始抓取 (11 个源串行, 约 60 秒) —— 稍后自动刷新'})
+                # v2.389: 前端补抓某几条走势线时会带 keys, 那时只跑相关的源(几秒),
+                #   提示语不能还说「11 个源 / 60 秒」, 否则用户以为又要等一分钟。
+                if _keys:
+                    _m = '已开始抓取缺少的数据 (%d 项) —— 几秒钟就好' % len(_keys)
+                else:
+                    _m = '已开始抓取 (11 个源串行, 约 60 秒) —— 稍后自动刷新'
+                self._json({'ok': True, 'started': True, 'keys': _keys, 'msg': _m})
                 return
 
             if path == '/api/idx_sync':
