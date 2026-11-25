@@ -1,0 +1,118 @@
+{
+ "schema": 1,
+ "fetched_at": "2026-11-26 00:33:00",
+ "items": {
+  "cn_10y": {
+   "name": "中国10年期国债",
+   "unit": "%",
+   "freq": "D",
+   "last_date": "2026-11-25",
+   "n": 2500
+  },
+  "us_10y": {
+   "name": "美国10年期国债",
+   "unit": "%",
+   "freq": "D",
+   "last_date": "2026-11-24",
+   "n": 2500
+  },
+  "cn_us_spread": {
+   "name": "中美利差(中-美)",
+   "unit": "%",
+   "freq": "D",
+   "last_date": "2026-11-24",
+   "n": 2500
+  },
+  "us_curve": {
+   "name": "美债期限利差(10Y-2Y)",
+   "unit": "%",
+   "freq": "D",
+   "last_date": "2026-11-24",
+   "n": 2500
+  },
+  "lpr1y": {
+   "name": "LPR 1年期",
+   "unit": "%",
+   "freq": "M",
+   "last_date": "2026-11-20",
+   "n": 1540
+  },
+  "cn_cpi": {
+   "name": "中国CPI同比",
+   "unit": "%",
+   "freq": "M",
+   "last_date": "2026-10-01",
+   "n": 226
+  },
+  "cn_ppi": {
+   "name": "中国PPI同比",
+   "unit": "%",
+   "freq": "M",
+   "last_date": "2026-10-01",
+   "n": 250
+  },
+  "us_cpi": {
+   "name": "美国CPI同比",
+   "unit": "%",
+   "freq": "M",
+   "last_date": "2026-09-01",
+   "n": 224
+  },
+  "cn_m2": {
+   "name": "M2同比",
+   "unit": "%",
+   "freq": "M",
+   "last_date": "2026-10-01",
+   "n": 226
+  },
+  "cn_m1": {
+   "name": "M1同比",
+   "unit": "%",
+   "freq": "M",
+   "last_date": "2026-10-01",
+   "n": 226
+  },
+  "cn_m1m2": {
+   "name": "M1-M2 剪刀差",
+   "unit": "pp",
+   "freq": "M",
+   "last_date": "2026-10-01",
+   "n": 226
+  },
+  "cn_pmi": {
+   "name": "中国制造业PMI",
+   "unit": "",
+   "freq": "M",
+   "last_date": "2026-10-01",
+   "n": 226
+  },
+  "cn_gdp": {
+   "name": "中国GDP累计同比",
+   "unit": "%",
+   "freq": "Q",
+   "last_date": "2026-09-01",
+   "n": 83
+  },
+  "sox": {
+   "name": "费城半导体指数",
+   "unit": "",
+   "freq": "D",
+   "last_date": "2026-11-25",
+   "n": 2500
+  },
+  "usdcny": {
+   "name": "人民币汇率(中行)",
+   "unit": "元",
+   "freq": "D",
+   "last_date": "2026-11-25",
+   "n": 2500
+  },
+  "ndx": {
+   "name": "纳斯达克100",
+   "unit": "",
+   "freq": "D",
+   "last_date": "2026-11-24",
+   "n": 2500
+  }
+ }
+}
