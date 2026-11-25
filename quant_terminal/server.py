@@ -9996,16 +9996,30 @@ if __name__ == '__main__':
     #   任务里自己调 auction_scan.scan() 只会算出一份没人看得见的结果。而且必须起 daemon 线程 —— 自动任务在
     #   独立 tick 线程里跑，同步调会把它堵住 1.5~20 秒，期间其它时点全错过。
     #   ★ 与用户手点按钮走的是**同一条路**，所以缓存/归档/气泡/状态条四条副作用自动生效。
+    # 🔴 v2.387 (2026-11-25 用户 m04605): **档位也必须跟用户当前选的那一档**。
+    #   改之前这里把 lines 写死成 '4' —— 前端停在 3 线档时, 09:27 的竞价结果会落到 4 线档的槽和
+    #   归档里(_auto4.json), 切回 3 线档看到的是上一次手动扫的旧列表, 今天的列表"回不来"。
+    #   档位来源 = auto_task.ui_lines() (前端心跳 /api/status?lines=N 每 10 秒上报),
+    #   与 server.py 里刷上级行业(_pln)用的是同一条通道, 不新增任何前端改动。
     def _auto_scan_auction():
         try:
             _w = bool(SCAN_STATE.get('running'))
         except Exception:
             _w = False
+        # v2.387: 档位 = 用户当前选中的均线档位 (心跳上报), 不再写死 '4'。
+        #   ui_lines() 已在 touch_heartbeat 里校验过 3/4/5/6, 这里再兜一层, 防
+        #   页面从没上报过(刚重启)时拿到脏值把槽写到非法档位上。
+        try:
+            _ln = str(auto_task.ui_lines() or '4')
+        except Exception:
+            _ln = '4'
+        if _ln not in ('3', '4', '5', '6'):
+            _ln = '4'
         t = threading.Thread(target=run_scan_async,
-                             args=('auction', '4', 'auto'), daemon=True)
+                             args=('auction', _ln, 'auto'), daemon=True)
         t.start()
-        return {'ok': True, 'mode': 'auction', 'lines': '4', 'pool': 'auto',
-                'note': ('已有扫描在跑, 本次已接管' if _w else '已发起竞价扫描')}
+        return {'ok': True, 'mode': 'auction', 'lines': _ln, 'pool': 'auto',
+                'note': ('已有扫描在跑, 本次已接管' if _w else '已发起竞价扫描 (%s线档)' % _ln)}
 
     auto_task.bind(sector_fn=run_sector_refresh_auto,
                    csv_fn=run_snapshot_from_intraday,

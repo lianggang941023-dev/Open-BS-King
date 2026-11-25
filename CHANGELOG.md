@@ -20,6 +20,53 @@
 ---
 
 ---
+## v2.387 — 2026-11-25
+
+### 修复：竞价打板「自动任务」把结果写死进 4 线档
+
+**症状**（用户报告）：在 3 线档下跑出来的竞价打板结果，切到 4 线档能看到；
+再切回 3 线档却变成上一次（甚至前一天）的旧列表，今天的列表「留在 4 线档回不来」。
+
+**根因**：界面上的「竞价打板」有两条入口 —— 手动点按钮、以及每天 09:27:20 的自动任务。
+手动入口的档位是前端按当前下拉框传的（`/api/scan/start?lines=N`），没问题；
+但自动任务那条路（`server.py` 里的 `_auto_scan_auction()`）把档位**写死成了 `'4'`**：
+
+```python
+t = threading.Thread(target=run_scan_async, args=('auction', '4', 'auto'), daemon=True)
+```
+
+于是不论界面停在哪一档，09:27 的竞价结果一律落进 4 线档的缓存槽
+（`quant_terminal/scan_cache.json` 的 `slots.auto.auction['4']`），归档文件名也一律是 `_auto4.json`。
+切回 3 线档时读的是 `['3']` 槽，里面还是上一次手动扫描的旧数据。
+
+**改法**：档位改为读前端心跳上报的当前档位，不再写死。
+—— `auto_task.ui_lines()` 这个通道本来就有（前端每 10 秒 `/api/status?lines=N` 上报一次，
+刷上级行业时也用它），这次只是让竞价自动任务也走同一条路：
+
+```python
+_ln = str(auto_task.ui_lines() or '4')
+if _ln not in ('3', '4', '5', '6'):
+    _ln = '4'                      # 兜底: 页面刚重启还没上报心跳
+t = threading.Thread(target=run_scan_async, args=('auction', _ln, 'auto'), daemon=True)
+```
+
+不新增任何前端改动，扫描本身的逻辑（`auction_scan.scan()`）与档位无关，一个字没动。
+
+### 存量数据
+
+已经错落到 4 线档槽里的历史结果**保留原样**，不做自动搬迁：
+`data_archive/scan/` 里的归档是 9:27 那一刻的真实记录，改它的 `lines` 字段等于篡改回测底稿。
+本次只针对用户报告的那一份（`2026-11-25` 22 只），在 `scan_cache.json` 里把它**复制**了一份到
+3 线档槽（`slots.auto.auction['3']`，只改该槽自己的 `lines` 标记为 `'3'`），4 线档槽原封不动。
+归档文件一个字节都没改。
+
+以后若再遇到，处理原则：**缓存槽可以复制，归档永远不动。**
+
+### 改动文件
+
+- `quant_terminal/server.py`（`_auto_scan_auction()` 档位取 `auto_task.ui_lines()`）
+- `VERSION` → `v2.387`
+
 ## v2.386 — 2026-11-25
 
 ### 新增：设置界面「数据同步」按钮
