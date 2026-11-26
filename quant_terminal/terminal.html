@@ -8289,16 +8289,33 @@ function aucBestTrend(r){
   return {status: best, pct: bpct, name: bname, kind: bkind};
 }
 function aucNameStyle(r){
+  if(aucRainbowWhy(r)) return '';      // v2.392: 彩虹优先 —— 命中弱转强就不叠趋势色
   var b = aucBestTrend(r);
   if(!b) return '';
   if(b.status === '偏空') return '';                 // 偏空及以下: 保持默认白
   return 'color:' + ratingColor(b.status, b.pct) + ';font-weight:700';
 }
-// v2.322 的彩虹逻辑保留 —— v2.391 起**暂不接**（用户要改成「前一日放量阴线 + 今日竞价高开」才染,
-//   弱转强口径还在勘察, 下一轮再接）。函数留着, 免得下次重写。
+// v2.392 (2026-11-26 用户 m06467): 弱转强 → 简称静态彩虹。
+//   口径: **前一日是放量阴线** (收<开 且 量比>=1.2) —— 昨日放量下跌, 今日竞价还能高开,
+//   按游资说法就是「弱转强 / 超预期」。
+//   ★ 为什么不再要求「今日竞价红开」: 竞价打板模式选出来的票 **本来就是高开**
+//     (284 行历史归档 auct_pct 全部 >0, 最小 1.01%) ⇒ 这个条件恒成立, 不必重复判。
+//   ★ 彩虹优先于趋势色 (用户 m06467 第 3 条): 命中弱转强就染彩虹, 不再叠行业/概念趋势色。
+//   阈值 1.2 是用户定的 (m06467 第 1 条)。
+var AUC_W2S_VR = 1.2;
+function aucW2S(r){
+  if(!r) return null;
+  if(!r.prev_yin) return null;
+  var v = (r.prev_vr5 == null) ? null : Number(r.prev_vr5);
+  if(v == null || !(v >= AUC_W2S_VR)) return null;
+  return {vr: v, date: r.prev_date || ''};
+}
 function aucRainbowWhy(r){
-  if(!r) return '';
-  return '';
+  var w = aucW2S(r);
+  if(!w) return '';
+  return '弱转强: 前一日(' + (w.date || '?') + ') 放量阴线, 量比 '
+    + fmt(w.vr, 2) + ' 倍 >= ' + AUC_W2S_VR
+    + '\n昨日放量下跌, 今日竞价仍高开 —— 弱转强/超预期, 简称彩虹';
 }
 
 // v2.40 (2026-09-03): 概念列分段染色 — 每段概念按概念面板状态色上色 (直观看多头概念数量)
@@ -10436,11 +10453,20 @@ function renderTable(filter){
       var p20Tip=p20?' title="现价 '+fmt(r.price,2)+' 元 > 20 元 —— v2.254 起放宽到 50 元不淘汰, 但价格偏高打板空间小, 请自行斟酌"':' ';
       var vTip=(r.verdict_tx||'')+' · '+(r.reason||'');
       // v2.391 (用户 m06098): 行业/概念趋势色 → 简称染色 (取最高级别; 偏空保持默认白)
+      var _arbT=aucRainbowWhy(r);          // v2.392: 弱转强 → 彩虹 (优先级高于趋势色)
       var _arbS=aucNameStyle(r);
+      var _arbTip='';                      // v2.392: 只在「昨日是阴线」时给浮窗解释, 免得满屏提示
+      if(r.prev_yin){
+        var _pv=(r.prev_vr5==null?null:Number(r.prev_vr5));
+        _arbTip='前一日 '+((r.prev_date||'')?r.prev_date:'?')
+          +': 阴线, 量比 '+(_pv==null?'--':fmt(_pv,2))+' 倍'
+          +(aucW2S(r)?('  >= '+AUC_W2S_VR+' → 弱转强, 简称彩虹')
+                    :('  < '+AUC_W2S_VR+' → 未达弱转强阈值'));
+      }
       h+='<tr id="row-'+i+'" data-code="'+r.code+'" onclick="selectStock(\''+r.code+'\','+i+')">'
         +'<td data-col="auct_pct" style="color:'+apCol+'">'+(r.auct_pct==null?'--':(fmt(r.auct_pct,2)+'%'))+'</td>'
         +'<td data-zt20="'+bareCode(r.code)+'" style="color:'+zt20Col(ZT20[bareCode(r.code)])+'">'+r.code+'</td>'
-        +'<td data-bs-mcap="'+r.code+'" style="'+_arbS+'">'+r.name+'</td>'
+        +'<td data-bs-mcap="'+r.code+'"'+(_arbT?' class="rainbow"':'')+(_arbTip?(' data-bs-tip="'+escAttr(_arbTip)+'"'):'')+' style="'+_arbS+'">'+r.name+'</td>'
         +'<td class="'+clr(r.change_pct)+'">'+fmt(r.change_pct,1)+'%</td>'
         +'<td style="'+p20Col+'"'+p20Tip+'>'+fmt(r.price,2)+(p20?' ⚠':'')+'</td>'
         +'<td data-col="auct_ratio" title="'+escAttr(ayyTip)+'"><span class="hdr-swap">'

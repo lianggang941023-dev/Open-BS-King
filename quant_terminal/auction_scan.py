@@ -496,6 +496,22 @@ def fetch_day_kline(num, count=8, timeout=8):
     return out
 
 
+def _prev5_vol_before(kline_rows, n=5):
+    """yday **之前**那 n 个交易日的均量 (手) —— 弱转强量比分母用
+
+    ★ 与 _prev5_vol 的区别: _prev5_vol 取的是「含 yday 在内」的最近 n 根
+      (那是「竞价量比」的分母, 竞价量 / 日均量); 这里要的是 yday 之前那 n 根,
+      用来判断 **yday 自己那根 K 线放没放量**。
+    """
+    if not kline_rows or len(kline_rows) < n + 1:
+        return 0.0
+    seg = kline_rows[-(n + 1):-1]
+    vols = [r['vol'] for r in seg if r.get('vol', 0) > 0]
+    if len(vols) < n:
+        return 0.0
+    return sum(vols) / float(n)
+
+
 def _prev5_vol(kline_rows):
     """前 5 个交易日的均量 (手) —— 量比分母用
 
@@ -820,6 +836,10 @@ def evaluate_one(code, name, rows, quote, prev_amt=None, prev5_vol=None,
     turnover_y = turnover_pct(yday['vol'], _free)
     turnover_t = turnover_pct(_vol_now, _free)
 
+    # v2.392 (2026-11-26 用户 m06467): 弱转强口径 —— 前一日放量阴线
+    #   量比 = 昨日成交量 / 昨日之前 5 个交易日均量 (与「竞价量比」口径分开)
+    _pv5 = _prev5_vol_before(hist)
+
     return {
         'code': re.sub(r'\D', '', code),
         'name': name or quote.get('name') or '',
@@ -846,6 +866,13 @@ def evaluate_one(code, name, rows, quote, prev_amt=None, prev5_vol=None,
         'turnover_t': turnover_t,
         'free_shares': _free,                   # 自由流通股本(万股), 便于自查
         'prev_bullish': yday['close'] >= yday['open'],      # 阳线含平盘
+        # v2.392 (2026-11-26 用户 m06467): 弱转强 —— 前一日放量阴线 + 今日竞价红开
+        #   prev_yin  = 昨日收 < 昨开 (阴线, 与 prev_bullish 互补, 平盘算阳)
+        #   prev_vr5  = 昨日量 / 昨日之前 5 日均量 (倍数); 分母算不出给 None
+        #   prev_date = 昨日那根 K 线的日期 (浮窗里给人看, 防止错位到别的日子)
+        'prev_yin': yday['close'] < yday['open'],
+        'prev_vr5': (round(yday['vol'] / _pv5, 2) if _pv5 > 0 else None),
+        'prev_date': yday['date'],
         # v2.292 (2026-11-12 用户 m13718): 昨日那根 K 线的日期 —— scan() 要用它去
         #   腾讯 day/query 查「昨日 09:30 竞价额」，算「竞昨比」= 今竞价额 / 昨竞价额。
         #   不能自己拿 today-1 天算：周末/节假日会错位，而 hist[-1] 就是真正的上一根。
