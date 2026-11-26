@@ -8260,18 +8260,45 @@ function isRainbowRow(r){
   if(r.sector_status!=='强多头')return false;
   return (r.dist_pct>=-1&&r.dist_pct<=5)&&r.sync_pct>=70&&r.body_pct>=60;
 }
-// v2.322 (2026-11-15 用户 m22264): 竞价打板的简称彩虹 —— 与趋势三模式的 isRainbowRow 完全无关。
-//   用户原话: 「"竞价打板"模式中，如果选出来的股票所属行业或者任意包含概念是偏多，强多级别，
-//             就给股票的简称渲染成静态彩虹色」
-//   数据来源: server.py 的 _mh_of() 只在命中 偏多/强多头 时才写非空串（v2.308 起拍卖/超跌/波段
-//   三条早退分支的行都带 ind_t / con_t / mh_ready=1），所以这里判「非空」即可，不必再比字面量。
-//   老落盘槽没有这两个键 ⇒ 取到 undefined ⇒ 返回空串 ⇒ 不染，绝不误染。
-//   返回非空串 = 该染彩虹，串本身用作 title 说明。
+// v2.391 (2026-11-26 用户 m06098): 竞价打板的简称染色 —— 从「一刀切彩虹」改成「跟行业/概念趋势色」。
+//   用户原话: 「所属行业或概念板块有偏多及以上，股票简称染色改为和行业概念趋势对应的颜色
+//             (按行业或概念板块中最高的颜色级别)」「非偏多及以上仍保持白色」「中性这个级别也要跟着趋势色」
+//   取「行业 + 所有包含概念」里**级别最高**的那一个，用 ratingColor 上色:
+//     强多头 pct>=70 → 红 var(--up)   强多头 40~70 → 金 var(--gold)   偏多 → 淡黄 var(--lyellow)
+//     中性 → 淡绿 var(--lgreen)       偏空 / 未收录 → 不着色(保持默认白)
+//   数据来源: server.py 的 _attach_trend_status() 已经把 sector_status / sector_pct / concept_status
+//   (含 中性/偏空) 挂到行上，所以前端不必再问后端要东西。
+//   老落盘槽若没有这些键 ⇒ 取到 undefined ⇒ 返回空串 ⇒ 不染，绝不误染。
+var AUC_TIER = {'强多头':0, '偏多':1, '中性':2, '偏空':3};
+function aucBestTrend(r){
+  if(!r) return null;
+  var best=null, bpct=null, bname='', bkind='';
+  function take(st, pct, nm, kind){
+    if(!st || AUC_TIER[st]==null) return;
+    var v = (pct==null) ? null : Number(pct);
+    if(!best){ best=st; bpct=v; bname=nm; bkind=kind; return; }
+    var t0 = AUC_TIER[st], t1 = AUC_TIER[best];
+    if(t0 < t1 || (t0 === t1 && v != null && (bpct == null || v > bpct))){
+      best=st; bpct=v; bname=nm; bkind=kind;
+    }
+  }
+  take(r.sector_status, r.sector_pct, r.sector||'', '行业');
+  var sts = r.concept_status || {};
+  for(var k in sts){ if(!sts.hasOwnProperty(k)) continue; var d = sts[k] || {}; take(d.status, d.pct, k, '概念'); }
+  if(!best) return null;
+  return {status: best, pct: bpct, name: bname, kind: bkind};
+}
+function aucNameStyle(r){
+  var b = aucBestTrend(r);
+  if(!b) return '';
+  if(b.status === '偏空') return '';                 // 偏空及以下: 保持默认白
+  return 'color:' + ratingColor(b.status, b.pct) + ';font-weight:700';
+}
+// v2.322 的彩虹逻辑保留 —— v2.391 起**暂不接**（用户要改成「前一日放量阴线 + 今日竞价高开」才染,
+//   弱转强口径还在勘察, 下一轮再接）。函数留着, 免得下次重写。
 function aucRainbowWhy(r){
   if(!r) return '';
-  var i=(r.ind_t||''), c=(r.con_t||'');
-  if(!i && !c) return '';
-  return '板块档位: 行业 '+(i||'非偏多')+' · 概念 '+(c||'非偏多')+' —— 所属板块偏多, 简称彩虹';
+  return '';
 }
 
 // v2.40 (2026-09-03): 概念列分段染色 — 每段概念按概念面板状态色上色 (直观看多头概念数量)
@@ -10408,12 +10435,12 @@ function renderTable(filter){
       var p20Col=p20?'color:var(--red);font-weight:700':'color:var(--tx2)';
       var p20Tip=p20?' title="现价 '+fmt(r.price,2)+' 元 > 20 元 —— v2.254 起放宽到 50 元不淘汰, 但价格偏高打板空间小, 请自行斟酌"':' ';
       var vTip=(r.verdict_tx||'')+' · '+(r.reason||'');
-      // v2.322 (2026-11-15 用户 m22264): 行业/任意概念是 偏多·强多头 ⇒ 简称静态彩虹
-      var _arbT=aucRainbowWhy(r);
+      // v2.391 (用户 m06098): 行业/概念趋势色 → 简称染色 (取最高级别; 偏空保持默认白)
+      var _arbS=aucNameStyle(r);
       h+='<tr id="row-'+i+'" data-code="'+r.code+'" onclick="selectStock(\''+r.code+'\','+i+')">'
         +'<td data-col="auct_pct" style="color:'+apCol+'">'+(r.auct_pct==null?'--':(fmt(r.auct_pct,2)+'%'))+'</td>'
         +'<td data-zt20="'+bareCode(r.code)+'" style="color:'+zt20Col(ZT20[bareCode(r.code)])+'">'+r.code+'</td>'
-        +'<td data-bs-mcap="'+r.code+'"'+(_arbT?' class="rainbow"':'')+'>'+r.name+'</td>'
+        +'<td data-bs-mcap="'+r.code+'" style="'+_arbS+'">'+r.name+'</td>'
         +'<td class="'+clr(r.change_pct)+'">'+fmt(r.change_pct,1)+'%</td>'
         +'<td style="'+p20Col+'"'+p20Tip+'>'+fmt(r.price,2)+(p20?' ⚠':'')+'</td>'
         +'<td data-col="auct_ratio" title="'+escAttr(ayyTip)+'"><span class="hdr-swap">'
