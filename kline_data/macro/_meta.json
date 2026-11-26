@@ -1,33 +1,33 @@
 {
  "schema": 1,
- "fetched_at": "2026-11-26 01:08:23",
+ "fetched_at": "2026-11-26 19:42:44",
  "items": {
   "cn_10y": {
    "name": "中国10年期国债",
    "unit": "%",
    "freq": "D",
-   "last_date": "2026-11-25",
+   "last_date": "2026-11-26",
    "n": 2500
   },
   "us_10y": {
    "name": "美国10年期国债",
    "unit": "%",
    "freq": "D",
-   "last_date": "2026-11-24",
+   "last_date": "2026-11-25",
    "n": 2500
   },
   "cn_us_spread": {
    "name": "中美利差(中-美)",
    "unit": "%",
    "freq": "D",
-   "last_date": "2026-11-24",
+   "last_date": "2026-11-25",
    "n": 2500
   },
   "us_curve": {
    "name": "美债期限利差(10Y-2Y)",
    "unit": "%",
    "freq": "D",
-   "last_date": "2026-11-24",
+   "last_date": "2026-11-25",
    "n": 2500
   },
   "lpr1y": {
@@ -104,14 +104,14 @@
    "name": "人民币汇率(中行)",
    "unit": "元",
    "freq": "D",
-   "last_date": "2026-11-25",
+   "last_date": "2026-11-26",
    "n": 2500
   },
   "ndx": {
    "name": "纳斯达克100",
    "unit": "",
    "freq": "D",
-   "last_date": "2026-11-24",
+   "last_date": "2026-11-25",
    "n": 2500
   },
   "us_fed_up": {
