@@ -8306,16 +8306,25 @@ var AUC_W2S_VR = 1.2;
 function aucW2S(r){
   if(!r) return null;
   if(!r.prev_yin) return null;
+  // v2.393 (2026-11-26 用户 m06751): 只有「量比 >= 1.2」不够 —— 下降通道里前 5 日
+  //   越缩量, 一根继续缩量的阴线也能算出 1.2 倍的假放量(北京科锐/创新医疗就是)。
+  //   必须再加一条: 昨日这根的成交量要**大于再往前一天**, 才是真放量。
+  if(!r.prev_up_vol) return null;
   var v = (r.prev_vr5 == null) ? null : Number(r.prev_vr5);
   if(v == null || !(v >= AUC_W2S_VR)) return null;
-  return {vr: v, date: r.prev_date || ''};
+  var r1 = (r.prev_vr1 == null) ? null : Number(r.prev_vr1);
+  return {vr: v, date: r.prev_date || '', vr1: r1};
 }
 function aucRainbowWhy(r){
   var w = aucW2S(r);
   if(!w) return '';
-  return '弱转强: 前一日(' + (w.date || '?') + ') 放量阴线, 量比 '
-    + fmt(w.vr, 2) + ' 倍 >= ' + AUC_W2S_VR
-    + '\n昨日放量下跌, 今日竞价仍高开 —— 弱转强/超预期, 简称彩虹';
+  var _t = '弱转强: 前一日(' + (w.date || '?') + ') 放量阴线, 5日量比 '
+    + fmt(w.vr, 2) + ' 倍 >= ' + AUC_W2S_VR;
+  if(w.vr1 != null){
+    _t += ', 且是前一日的 ' + fmt(w.vr1, 2) + ' 倍';
+  }
+  _t += '\n昨日放量下跌, 今日竞价仍高开 —— 弱转强/超预期, 简称彩虹';
+  return _t;
 }
 
 // v2.40 (2026-09-03): 概念列分段染色 — 每段概念按概念面板状态色上色 (直观看多头概念数量)

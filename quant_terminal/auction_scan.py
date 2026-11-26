@@ -872,6 +872,13 @@ def evaluate_one(code, name, rows, quote, prev_amt=None, prev5_vol=None,
         #   prev_date = 昨日那根 K 线的日期 (浮窗里给人看, 防止错位到别的日子)
         'prev_yin': yday['close'] < yday['open'],
         'prev_vr5': (round(yday['vol'] / _pv5, 2) if _pv5 > 0 else None),
+        # v2.393 (2026-11-26 用户 m06751): 光有 VR5 不够 —— 若前 5 日更缩量,
+        #   一个**下降通道里的缩量阴线**也能算出 1.2 倍的假放量。用户明确要求:
+        #   昨日这根阴线的量还必须**大于再往前一天**的成交量才算真放量。
+        #   注意 hist[-2] 是「前日」, hist[-1] 是「昨日」, 都在数据日之前。
+        'prev_up_vol': (len(hist) >= 2 and yday['vol'] > hist[-2]['vol']),
+        'prev_vr1': (round(yday['vol'] / hist[-2]['vol'], 2)
+                     if len(hist) >= 2 and hist[-2]['vol'] > 0 else None),
         'prev_date': yday['date'],
         # v2.292 (2026-11-12 用户 m13718): 昨日那根 K 线的日期 —— scan() 要用它去
         #   腾讯 day/query 查「昨日 09:30 竞价额」，算「竞昨比」= 今竞价额 / 昨竞价额。
