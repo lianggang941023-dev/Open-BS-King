@@ -613,10 +613,17 @@ def _patch_scan_slot(pool, mode, lines, prices):
                 return 0
             rows = slot.get('results') or []
             hit = 0
+            _hitc = set()   # v2.395: 按代码去重 —— 同一只票可能同时在 results 和 auction_refs 里
             # v2.272: 波段低吸的六口径是**分开存的**(slot.wave_combos[键].rows),
             #   slot.results 只是默认口径那一组。前端切口径后会刷新**当前口径**的行,
             #   所以这里要把六组一起刷, 否则切一次口径回来价又变回扫描时的旧值。
             _buckets = [rows]
+            # v2.395 (用户 m07131): 一字板参考名单也要回写 —— 它存在 slot.auction_refs,
+            #   与 results 完全独立。不回写的话「刷价 → 切模式 → 切回来」参考块又变回扫描那一刻的
+            #   涨停价(用户看到的就是"涨跌幅被锁死在涨停不更新")。
+            _ar_refs = slot.get('auction_refs')
+            if isinstance(_ar_refs, list):
+                _buckets.append(_ar_refs)
             _wc = slot.get('wave_combos')
             if mode == 'wave' and isinstance(_wc, dict):
                 for _v in _wc.values():
@@ -630,7 +637,8 @@ def _patch_scan_slot(pool, mode, lines, prices):
                     for f in fields:
                         if f in p:
                             r[f] = p[f]
-                    hit += 1
+                    _hitc.add(str(r.get('code', '')))
+            hit = len(_hitc)
             if not hit:
                 return 0
             now = datetime.now().strftime('%m-%d %H:%M:%S')

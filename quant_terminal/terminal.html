@@ -12704,6 +12704,10 @@ async function refreshPrices(){
     var inDrill=maMembers!==null;
     var list=inDrill?maMembers:scanResults;
     var codes=list.map(function(r){return r.code});
+    // v2.395 (用户 m07131): 一字板参考票也要一起刷 —— 它们是独立于 results 的另一份名单,
+    //   不补进来就永远停在扫描那一刻的涨停价上(哪怕当天早就炸板/翻绿了)。
+    var _aurList=(window._aurRefs||[]);
+    for(var _ai=0;_ai<_aurList.length;_ai++){ if(_aurList[_ai]&&_aurList[_ai].code) codes.push(_aurList[_ai].code); }
     // 2. 收集模拟盘持仓代码
     try{
       var s=await api('/api/sim/state');
@@ -12733,6 +12737,19 @@ async function refreshPrices(){
           for(var _kk in _dd2){ if(_kk==='price'||_kk==='change_pct')continue; upd[key][_kk]=_dd2[_kk]; }
         }
       });
+      // v2.395 (用户 m07131): 参考票同步刷新。它们在 DOM 里由 aurRender() 从 window._aurRefs 重画,
+      //   所以必须先把新价写进这份数组, 再让 renderTable() 走到 aurRender()。
+      //   注意: 参考票若同时也在主列表里, 那是两个独立对象, 上面 forEach 改的是主列表那份, 不能省这一步。
+      for(var _aj=0;_aj<_aurList.length;_aj++){
+        var _ar=_aurList[_aj]; if(!_ar||!_ar.code)continue;
+        var _ak=String(_ar.code).replace(/^(SH|SZ)/i,'');
+        var _ap=d.prices[_ak];
+        if(!_ap)continue;
+        var _was=!!upd[_ak];                       // 主列表里已经刷过 = 不重复计数
+        _ar.price=_ap.price; _ar.change_pct=_ap.change_pct;
+        if(!_was) n++;
+        if(!_was) upd[_ak]={price:_ap.price, change_pct:_ap.change_pct};
+      }
       // v2.84 ①: 刷价重绘不播入场动画 —— 按价格列排序时刷价会改顺序, 否则整表 1 秒重播一遍
       pxSkipTblIn();
       if(inDrill){
