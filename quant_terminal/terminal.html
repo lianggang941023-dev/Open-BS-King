@@ -10466,11 +10466,20 @@ function renderTable(filter){
       var _arbS=aucNameStyle(r);
       var _arbTip='';                      // v2.392: 只在「昨日是阴线」时给浮窗解释, 免得满屏提示
       if(r.prev_yin){
+        // v2.393 (用户 m06751): 三条判据要逐条说清楚, 不能再用一句「量比 X 倍 < 1.2」
+        //   概括 —— 那样一只 1.29 倍但**没超前日量**的票会显示成「1.29 < 1.2」, 自相矛盾。
         var _pv=(r.prev_vr5==null?null:Number(r.prev_vr5));
-        _arbTip='前一日 '+((r.prev_date||'')?r.prev_date:'?')
-          +': 阴线, 量比 '+(_pv==null?'--':fmt(_pv,2))+' 倍'
-          +(aucW2S(r)?('  >= '+AUC_W2S_VR+' → 弱转强, 简称彩虹')
-                    :('  < '+AUC_W2S_VR+' → 未达弱转强阈值'));
+        var _pr=(r.prev_vr1==null?null:Number(r.prev_vr1));
+        var _why;
+        if(_pv==null){ _why='5日量比算不出(数据不足)'; }
+        else if(!(_pv>=AUC_W2S_VR)){ _why='5日量比 '+fmt(_pv,2)+' 倍 < '+AUC_W2S_VR; }
+        else if(!r.prev_up_vol){ _why='5日量比 '+fmt(_pv,2)+' 倍够, 但昨日量'
+                                       +(r.prev_vr1==null?'':'只有前一日的 '+fmt(_pr,2)+' 倍')
+                                       +' 没超前一日 —— 缩量阴线, 不算放量'; }
+        else { _why='5日量比 '+fmt(_pv,2)+' 倍 >= '+AUC_W2S_VR
+                   +', 昨日量是前一日的 '+fmt(_pr,2)+' 倍'; }
+        _arbTip='前一日 '+((r.prev_date||'')?r.prev_date:'?')+': 阴线 · '+_why
+          +(aucW2S(r)?'\n→ 弱转强/超预期, 简称彩虹':'\n→ 不染彩虹');
       }
       h+='<tr id="row-'+i+'" data-code="'+r.code+'" onclick="selectStock(\''+r.code+'\','+i+')">'
         +'<td data-col="auct_pct" style="color:'+apCol+'">'+(r.auct_pct==null?'--':(fmt(r.auct_pct,2)+'%'))+'</td>'
