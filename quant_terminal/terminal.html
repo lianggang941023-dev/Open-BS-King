@@ -18000,7 +18000,19 @@ function MKT_RADAR(d){
 function MKT_TREND(d){
   var t=d.trend||{}, l=d.limit||{}, ac=d.activity||{};
   var hi = t.new_high||0, lo = t.new_low||0;
-  var hl = (hi+lo)>0 ? (hi/(hi+lo)*100) : 0;
+  /* v2.400 (2026-11-28 用户 m08806): 两种口径都摆出来。
+     数值行显示 n收/n高(低) —— 数字用原值字号, 汉字「收/高/低」取其一半;
+     高低比改用**收盘价口径**的数量去比。 */
+  var hasC = (typeof t.new_high_close === 'number') && (typeof t.new_low_close === 'number');
+  var hiC = hasC ? t.new_high_close : 0, loC = hasC ? t.new_low_close : 0;
+  var hl = hasC && (hiC+loC)>0 ? (hiC/(hiC+loC)*100) : ((hi+lo)>0 ? (hi/(hi+lo)*100) : 0);
+  function nlVal(nA, cA, nB, cB, col){
+    var num = 'font-family:ui-monospace,Consolas,monospace;font-weight:600;font-size:15px;line-height:1.15;color:' + col;
+    var ch  = 'font-size:7.5px;line-height:1;color:' + col;
+    return '<span style="' + num + '">' + nA + '</span><span style="' + ch + '">' + cA + '</span>'
+         + '<span style="font-size:11px;line-height:1;color:var(--tx3)">/</span>'
+         + '<span style="' + num + '">' + nB + '</span><span style="' + ch + '">' + cB + '</span>';
+  }
   function cell(t1, v1, s1){
     /* v2.287: height:100% + 纵向居中 —— 让格子填满 grid 分到的高度，而不是缩在角落 */
     /* v2.306 (2026-11-14 用户 m17208): 副行(s1)改成**绝对定位贴右下角**, 不再占流式高度。
@@ -18021,8 +18033,10 @@ function MKT_TREND(d){
     + cell('站上MA5',  mNum(t.above_ma5_pct,0)+'%', '');
   g1 += cell('站上MA20', mNum(t.above_ma20_pct,0)+'%', '');
   g1 += cell('站上MA60', mNum(t.above_ma60_pct,0)+'%', '');
-  g1 += cell('60日新高', '<span style="color:var(--up)">'+hi+'</span>', '');
-  g1 += cell('60日新低', '<span style="color:var(--dn)">'+lo+'</span>', '');
+  g1 += cell('60日新高', hasC ? nlVal(hiC, '收', hi, '高', 'var(--up)')
+                             : '<span style="color:var(--up)">'+hi+'</span>', '');
+  g1 += cell('60日新低', hasC ? nlVal(loC, '收', lo, '低', 'var(--dn)')
+                             : '<span style="color:var(--dn)">'+lo+'</span>', '');
   g1 += cell('高低比', mNum(hl,0)+'%', '') + '</div>';
   var g2 = '<div style="font-size:8px;color:var(--tx3);margin:6px 0 3px;flex:0 0 auto">盘中观察</div>'
     + '<div style="flex:1;min-height:0;display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:1fr;gap:5px">'

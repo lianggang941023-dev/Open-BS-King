@@ -204,9 +204,12 @@ def _facts_one(fn):
         ma5 = _avg(cl[-5:]) if len(cl) >= 5 else 0.0
         ma20 = _avg(cl[-20:]) if len(cl) >= 20 else 0.0
         ma60 = _avg(cl[-60:]) if len(cl) >= 60 else 0.0
-        # 60 日新高/新低 (今日 high > 之前 60 根的最高)
+        # 60 日新高/新低 —— 两种口径都算 (v2.400, 用户 m08806)
+        #   ① 最高/最低价口径 (原有): 今日 high >= 前 60 根最高 / 今日 low <= 前 60 根最低
+        #   ② 收盘价口径 (与 TSP 一致): 今日 close >= 前 60 根最高收盘 / close <= 前 60 根最低收盘
         prev = parsed[:-1]
         hi_new = lo_new = False
+        hi_cls = lo_cls = False
         if len(prev) >= 20:
             ph = max(r[3] for r in prev[-60:])
             pl = min(r[4] for r in prev[-60:])
@@ -214,6 +217,12 @@ def _facts_one(fn):
                 hi_new = True
             if pl > 0 and low <= pl:
                 lo_new = True
+            ch = max(r[2] for r in prev[-60:])
+            cl_ = min(r[2] for r in prev[-60:])
+            if ch > 0 and close >= ch:
+                hi_cls = True
+            if cl_ > 0 and close <= cl_:
+                lo_cls = True
         # 今日涨幅 (CSV 自己算, 快照缺失时兜底)
         pct_csv = 0.0
         if len(parsed) >= 2:
@@ -224,7 +233,8 @@ def _facts_one(fn):
             'code': code, 'date': date, 'close': close, 'vol': vol,
             'amt': amt, 'turn': turn, 'vr': vr, 'free': free,
             'ma5': ma5, 'ma20': ma20, 'ma60': ma60,
-            'hi_new': hi_new, 'lo_new': lo_new, 'pct_csv': pct_csv,
+            'hi_new': hi_new, 'lo_new': lo_new,
+            'hi_cls': hi_cls, 'lo_cls': lo_cls, 'pct_csv': pct_csv,
         }
     except Exception:
         return None
@@ -489,6 +499,7 @@ def _build():
             'vr': f['vr'],
             'ma5': f['ma5'], 'ma20': f['ma20'], 'ma60': f['ma60'],
             'hi_new': f['hi_new'], 'lo_new': f['lo_new'],
+            'hi_cls': f['hi_cls'], 'lo_cls': f['lo_cls'],
         })
     # 名字补齐 (快照没返回的, 用 sector_kline.tickers 兜底)
     miss = [r for r in rows if not r['name']]
@@ -540,6 +551,8 @@ def _build():
     n60 = sum(1 for r in rows if r['ma60'] > 0)
     hi_new = sum(1 for r in rows if r['hi_new'])
     lo_new = sum(1 for r in rows if r['lo_new'])
+    hi_cls = sum(1 for r in rows if r['hi_cls'])
+    lo_cls = sum(1 for r in rows if r['lo_cls'])
 
     # 活跃度
     turns = [r['turn'] for r in rows if r['turn'] is not None]
@@ -623,6 +636,7 @@ def _build():
             'above_ma20_pct': round(a20 / float(n20) * 100.0, 1) if n20 else 0.0,
             'above_ma60_pct': round(a60 / float(n60) * 100.0, 1) if n60 else 0.0,
             'new_high': hi_new, 'new_low': lo_new,
+            'new_high_close': hi_cls, 'new_low_close': lo_cls,   # v2.400 收盘价口径
         },
         'activity': {
             'avg_turnover': round(avg_turn, 1) if turns else 0.0,
