@@ -10456,10 +10456,9 @@ function renderTable(filter){
       var pa=(r.prev_amt_yi==null?null:r.prev_amt_yi);
       var paCol=(pa==null)?'var(--tx3)':((pa<1)?'var(--red)':'var(--tx2)');
       var paTxt=(pa==null)?'--':fmt(pa,2);
-      // 现价 >20 元: v2.254 起不淘汰(v2.14 原本 20 元上限已放宽到 50), 但标红提醒
-      var p20=!!r.price_over20;
-      var p20Col=p20?'color:var(--red);font-weight:700':'color:var(--tx2)';
-      var p20Tip=p20?' title="现价 '+fmt(r.price,2)+' 元 > 20 元 —— v2.254 起放宽到 50 元不淘汰, 但价格偏高打板空间小, 请自行斟酌"':' ';
+      // v2.398 (用户 m08007): 去掉「现价 >20 元」的 ⚠ 标红提醒 —— 20 元上限 v2.254 起
+      //   就已放宽到 50 元不淘汰, 这个提示只制造噪音, 用户要求不再显示。
+      //   后端仍返回 price_over20 字段(不影响任何淘汰判定), 仅前端不再消费。
       var vTip=(r.verdict_tx||'')+' · '+(r.reason||'');
       // v2.391 (用户 m06098): 行业/概念趋势色 → 简称染色 (取最高级别; 偏空保持默认白)
       var _arbT=aucRainbowWhy(r);          // v2.392: 弱转强 → 彩虹 (优先级高于趋势色)
@@ -10486,7 +10485,7 @@ function renderTable(filter){
         +'<td data-zt20="'+bareCode(r.code)+'" style="color:'+zt20Col(ZT20[bareCode(r.code)])+'">'+r.code+'</td>'
         +'<td data-bs-mcap="'+r.code+'"'+(_arbT?' class="rainbow"':'')+(_arbTip?(' data-bs-tip="'+escAttr(_arbTip)+'"'):'')+' style="'+_arbS+'">'+r.name+'</td>'
         +'<td class="'+clr(r.change_pct)+'">'+fmt(r.change_pct,1)+'%</td>'
-        +'<td style="'+p20Col+'"'+p20Tip+'>'+fmt(r.price,2)+(p20?' ⚠':'')+'</td>'
+        +'<td style="color:var(--tx2)">'+fmt(r.price,2)+'</td>'
         +'<td data-col="auct_ratio" title="'+escAttr(ayyTip)+'"><span class="hdr-swap">'
         +'<i style="color:'+arCol+'">'+(ar==null?'--':(fmt(ar,2)+'%'))+'</i>'
         +'<i style="color:'+ayyCol+'">'+ayyTxt+'</i></span></td>'
