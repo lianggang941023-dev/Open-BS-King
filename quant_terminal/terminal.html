@@ -16599,7 +16599,9 @@ function stkLayout(){
   var w=$('stk-win'); if(!w) return;
   var vw=window.innerWidth, vh=window.innerHeight;
   var W = stkSt.big ? vw : Math.min(Math.round(vw*0.96), 1360);
-  var H = stkSt.big ? vh : Math.round(vh*0.95);
+  /* v2.404 (用户 m09720): 照 TSP —— 宽度 96vw / 上限 1360, 高度封顶 700 (TSP 用 max-h 95vh 由内容撑开),
+     原来是整屏 95vh, 两张图被拉得又扁又长, 比例失衡 */
+  var H = stkSt.big ? vh : Math.min(Math.round(vh*0.95), 700);
   w.style.width  = W+'px';
   w.style.height = H+'px';
   w.style.left   = Math.round((vw-W)/2)+'px';
@@ -16657,9 +16659,10 @@ function stkToggleBig(){ stkSt.big=!stkSt.big; stkLayout(); stkPaintHead(); }
 /* v2.403 (用户 m09109): 窗口版K线左上信息区 —— 现价/涨跌值/涨跌幅/市值/流通值/
    换手(实际换手率)/开收高低/实体涨跌幅/振幅/成交量 */
 function stkInfoCell(lbl, val, clr){
-  return '<span style="display:inline-flex;align-items:baseline;gap:3px;white-space:nowrap">'
-    + '<span style="font-size:9px;color:var(--tx3)">'+lbl+'</span>'
-    + '<span style="font-size:11px;font-weight:600;font-family:ui-monospace,Consolas,monospace;color:'+(clr||'var(--tx1)')+'">'+val+'</span>'
+  /* v2.404 (用户 m09720): 标签和数值统一一个字号 (原来 9px/11px 一大一小) */
+  return '<span style="display:inline-flex;align-items:baseline;gap:4px;white-space:nowrap">'
+    + '<span style="font-size:12px;color:var(--tx3)">'+lbl+'</span>'
+    + '<span style="font-size:12px;font-weight:600;font-family:ui-monospace,Consolas,monospace;color:'+(clr||'var(--tx1)')+'">'+val+'</span>'
     + '</span>';
 }
 function stkPaintInfo(){
@@ -16698,8 +16701,12 @@ function stkPaintInfo(){
   s += stkInfoCell('实体', ((body>0?'+':'')+body.toFixed(2)+'%'), bodyClr);
   s += stkInfoCell('振幅', (amp?amp.toFixed(2)+'%':'--'), 'var(--tx1)');
   s += stkInfoCell('量', (vol>=1e4?(vol/1e4).toFixed(0)+'万手':(vol?vol.toFixed(0)+'手':'--')), 'var(--tx1)');
-  var _last = '<span style="margin-left:auto;font-size:9px;color:var(--tx3)">'+(d.last_date||'')+'</span>';
+  var _last = '<span style="margin-left:auto;font-size:12px;color:var(--tx3)">'+(d.last_date||'')+'</span>';
   el.innerHTML = s + _last;
+  /* v2.404: 日K 小标题右侧的当日读数 (照 TSP 的 OHLC 摘要行) */
+  var kr=$('stk-kread');
+  if(kr) kr.textContent = (d.last_date||'')+'  开 '+o.toFixed(2)+'  高 '+hi.toFixed(2)+'  低 '+lo.toFixed(2)
+      + '  收 '+c.toFixed(2)+'  '+((chgp>0?'+':'')+chgp.toFixed(2))+'%  换手 '+turnTx;
 }
 window.stkPaintInfo=stkPaintInfo;
 
@@ -16714,7 +16721,7 @@ function stkPaintHead(){
   var c=$('stk-code'); if(c) c.textContent=stkSt.code;
   var nm=$('stk-name'); if(nm) nm.textContent=stkSt.name||'';
   var pg=$('stk-pager');
-  if(pg) pg.textContent = stkSt.list.length>1 ? ((stkSt.ix+1)+' · '+stkSt.list.length) : '';
+  if(pg) pg.textContent = stkSt.list.length>1 ? ((stkSt.ix+1)+' / '+stkSt.list.length) : '';   /* v2.404: 照 TSP 的 "2 / 8" */
   var pv=$('stk-prev'); if(pv) pv.disabled = stkSt.list.length<=1;
   var nx=$('stk-next'); if(nx) nx.disabled = stkSt.list.length<=1;
   var b1=$('stk-tab-daily'), b2=$('stk-tab-minute');
@@ -16943,21 +16950,61 @@ function stkDrawMinute(d){
   var ch=stkFresh('stk-mchart'); if(!ch) return;
   stkSt.mchart=ch; stkSt.chart=ch;
   var pts=d.points||[], prev=+d.prev_close||0;
-  var times=[], pcts=[], amts=[];
+  var times=[], pcts=[], prices=[], amts=[], avgPcts=[];
+  var _cv=0, _ca=0;
   for(var i=0;i<pts.length;i++){
     var t=String(pts[i].t||'');
     times.push(t.length===4 ? (t.slice(0,2)+':'+t.slice(2)) : t);
-    pcts.push(prev? +(((+pts[i].p)-prev)/prev*100).toFixed(3) : 0);
-    amts.push({value:(+pts[i].v||0), itemStyle:{color:(+pts[i].p>=prev)?TH.volUp:TH.volDn}});
+    var p=(+pts[i].p)||prev;
+    var pv=(+pts[i].v||0);
+    prices.push(p);
+    pcts.push(prev? +((p-prev)/prev*100).toFixed(3) : 0);
+    /* v2.404: 均价线 (照 TSP 的 #F59E0B) —— 成交量加权累计均价 */
+    _cv += pv; _ca += p*pv;
+    avgPcts.push((prev>0 && _cv>0) ? +(((_ca/_cv)-prev)/prev*100).toFixed(3) : 0);
+    amts.push({value:pv, itemStyle:{color:(p>=prev)?'rgba(240,68,56,0.6)':'rgba(18,183,106,0.6)'}});
   }
   var lo=0, hi=0;
   for(var q=0;q<pcts.length;q++){ if(pcts[q]<lo)lo=pcts[q]; if(pcts[q]>hi)hi=pcts[q]; }
   var pad=Math.max((hi-lo)*0.12, 0.15);
   var yMin=Math.floor((lo-pad)*10)/10, yMax=Math.ceil((hi+pad)*10)/10;
+  /* v2.404: 把上下界扩到「好看的整数步长」上, 刻度读起来是 +30% / +20% / +10% / 0% 这种,
+     而不是 +33.6% / +26.2% —— 照 TSP 的观感 */
+  var _step = null;
+  (function(){
+    /* 选一个「好看的」步长: 刻度数 <= 8 且 扩边后总跨度不超过原来的 1.35 倍, 取跨度最小的那个 */
+    var span=yMax-yMin, cands=[0.5,1,1.5,2,2.5,3,4,5,6,8,10,15,20,25,30,50,100];
+    var best=null;
+    for(var _i=0;_i<cands.length;_i++){
+      var st=cands[_i];
+      var mn=Math.floor(yMin/st)*st, mx=Math.ceil(yMax/st)*st;
+      var n=(mx-mn)/st;
+      if(n<2) continue;
+      if(n<=8 && (mx-mn) <= span*1.35){ best={st:st, mn:mn, mx:mx, w:mx-mn}; break; }
+    }
+    if(!best){
+      var st2=Math.ceil(span/6*10)/10;
+      best={st:st2, mn:Math.floor(yMin/st2)*st2, mx:Math.ceil(yMax/st2)*st2};
+    }
+    _step=best.st; yMin=+best.mn.toFixed(4); yMax=+best.mx.toFixed(4);
+  })();
+  /* v2.404 (用户 m09720): 照抄 TSP 分时走势 —— 线色按「最后价 vs 昨收」定红/绿,
+     面积用线性渐变从主色淡出到透明, 右侧再挂一条价格轴 */
+  var lastP = prices.length ? prices[prices.length-1] : prev;
+  var isUp = prev>0 ? (lastP > prev) : true;
+  var isFlat = prev>0 ? (lastP === prev) : false;
+  var lineColor = isFlat ? '#A1A1AA' : (isUp ? '#C74040' : '#2D9B65');
+  var areaFill  = isFlat ? 'rgba(180,180,190,0.40)' : (isUp ? 'rgba(199,64,64,0.40)' : 'rgba(34,197,94,0.40)');
+  var areaStyle = {color:{type:'linear', x:0, y:0, x2:0, y2:1,
+    colorStops:[{offset:0, color:areaFill}, {offset:1, color:'rgba(0,0,0,0)'}]}};
+  function _px(v){ return prev>0 ? +(prev*(1+v/100)).toFixed(2) : v; }
+  /* v2.404: 右轴刻度必须和左轴(%)严格一一对应, 否则 ECharts 各自取整会叠字 */
+  var _nTick = Math.max(2, Math.round((yMax-yMin)/_step));
+  var _ivPct = (yMax-yMin)/_nTick, _ivPx = prev>0 ? (_ivPct/100*prev) : 0;
   ch.setOption({
     animation:false, backgroundColor:'transparent',
     textStyle:{color:TH.tx2, fontSize:10},
-    grid:[{left:52,right:56,top:14,height:'64%'},{left:52,right:56,top:'80%',height:'14%'}],
+    grid:[{left:52,right:56,top:16,height:'62%'},{left:52,right:56,top:'78%',height:'14%'}],
     axisPointer:{link:[{xAxisIndex:'all'}]},
     tooltip:{trigger:'axis', axisPointer:{type:'cross'},
       backgroundColor:TH.tipBg, borderColor:TH.bd, textStyle:{color:TH.tipTx, fontSize:10}},
@@ -16971,23 +17018,33 @@ function stkDrawMinute(d){
        axisLabel:{show:false}, splitLine:{show:false}}
     ],
     yAxis:[
-      {gridIndex:0, min:yMin, max:yMax, splitNumber:5,
+      {gridIndex:0, min:yMin, max:yMax, interval:_ivPct, position:'left',
        axisLabel:{color:TH.tx2, fontSize:9, formatter:function(v){return (v>0?'+':'')+v.toFixed(1)+'%';}},
        splitLine:{lineStyle:{color:TH.split}}, axisLine:{show:false}, axisTick:{show:false}},
-      {gridIndex:1, splitNumber:2,
+      {gridIndex:0, min:_px(yMin), max:_px(yMax), interval:(_ivPx>0?_ivPx:undefined), position:'right',
+       axisLabel:{color:TH.tx2, fontSize:9, formatter:function(v){return (+v).toFixed(2);}},
+       splitLine:{show:false}, axisLine:{show:false}, axisTick:{show:false}},
+      {gridIndex:1, splitNumber:2, position:'left',
        axisLabel:{color:TH.tx2, fontSize:8, formatter:function(v){return v>=1e4?(v/1e4).toFixed(0)+'万':v;}},
        splitLine:{show:false}, axisLine:{show:false}, axisTick:{show:false}}
     ],
     series:[
       {name:'涨幅', type:'line', data:pcts, xAxisIndex:0, yAxisIndex:0, symbol:'none',
-       lineStyle:{width:1.4, color:TH.cyan},
-       areaStyle:{color:'rgba(0,200,224,0.10)'},
+       lineStyle:{width:1.2, color:lineColor},
+       areaStyle:areaStyle,
        markLine:{symbol:'none', silent:true, label:{show:false},
-         data:[{yAxis:0, lineStyle:{color:TH.tx3, width:1, type:'dashed', opacity:0.7}}]}},
-      {name:'量', type:'bar', data:amts, xAxisIndex:1, yAxisIndex:1}
+         data:[{yAxis:0, lineStyle:{color:'rgba(160,160,170,0.55)', width:1, type:'dashed'}}]}},
+      {name:'均价', type:'line', data:avgPcts, xAxisIndex:0, yAxisIndex:0, symbol:'none',
+       lineStyle:{width:1, color:'#F59E0B'}, emphasis:{disabled:true}},
+      {name:'量', type:'bar', data:amts, xAxisIndex:1, yAxisIndex:2}
     ]
   });
   ch.resize();
+  var _dd=String(d.date||'');
+  if(/^\d{8}$/.test(_dd)) _dd=_dd.slice(0,4)+'-'+_dd.slice(4,6)+'-'+_dd.slice(6,8);
+  var mr=$('stk-mread');
+  if(mr) mr.textContent = _dd+'  昨收 '+(prev?prev.toFixed(2):'--')
+      + '  最新 '+(lastP?lastP.toFixed(2):'--')+'  '+((pcts.length&&pcts[pcts.length-1]>0?'+':'')+(pcts.length?pcts[pcts.length-1].toFixed(2):'0.00'))+'%';
 }
 
 window.stkOpen=stkOpen; window.stkClose=stkClose; window.stkNav=stkNav;
@@ -18346,7 +18403,13 @@ function mktOpenBoard(kind, name){
 
 /* ── ⑦ 四张榜单 ───────────────────────────────────────────────────────── */
 function MKT_LISTS(d){
-  function list(title, rows, mode){
+  function list(title, rows, mode, lid){
+    /* v2.404 (用户 m09720): 每张榜各自维护一份股票列表 —— 传进 mktPick,
+       否则「下一只」永远从涨幅榜第一只开始往后切 */
+    try{
+      window._mktPickLists = window._mktPickLists || {};
+      window._mktPickLists[lid || mode || 'x'] = (rows || []).map(function(r){ return {code:r.code, name:r.name}; });
+    }catch(e){}
     var h='';
     (rows||[]).forEach(function(r,i){
       var right;
@@ -18357,7 +18420,7 @@ function MKT_LISTS(d){
          h6=222px 内容区 186px，8 行 × 22 = 176px 刚好放下 TOP8 不翻页 */
       h += '<div style="flex:1 1 0;min-height:0;display:flex;padding:0">' + mRow((i+1), (r.name||r.code), r.code, mTagOf(r.code),
              '<span style="color:'+mPctCol(r.pct)+'">'+mPct(r.pct)+'</span>', right, 'var(--tx2)',
-             'mktPick(\''+mEsc(r.code)+'\',\''+mEsc(r.name)+'\')') + '</div>';
+             'mktPick(\''+mEsc(r.code)+'\',\''+mEsc(r.name)+'\',\''+mEsc(lid||'')+'\')') + '</div>';
     });
     if(!h) return '<div style="font-size:8px;color:var(--tx3)">无数据</div>';
     /* v2.291: TOP10 共 10 行, 外层 flex 列 + 每行 flex:1 ⇒ 卡片多高都等分铺满 */
@@ -18369,14 +18432,20 @@ function MKT_LISTS(d){
      行高由 mRow 的 padding 撑开，8 行 * 30px = 240px，h9=298px 富余。 */
   /* v2.290 (用户 m13369 红线③): top8 -> top10; 四张卡整体下移到贴靠窗口底部
      y15 h6 (底边 21 行) -> y16 h7 (底边 23 行 = 868px, 正好铺满 874px 内容区) */
-  return mCard('涨幅榜', 'TOP 10', list('',(d.top_gainers||[]),'pct'), 2, 7, 0, 16, 'rank')
-       + mCard('跌幅榜', 'TOP 10', list('',(d.top_losers||[]),'pct'), 2, 7, 2, 16, 'rank')
-       + mCard('成交额榜', 'TOP 10', list('',(d.turnover_leaders||[]),'amount'), 2, 7, 4, 16, 'rank')
-       + mCard('活跃换手', 'TOP 10', list('',(d.active_leaders||[]),'active'), 2, 7, 6, 16, 'rank');
+  return mCard('涨幅榜', 'TOP 10', list('',(d.top_gainers||[]),'pct','gain'), 2, 7, 0, 16, 'rank')
+       + mCard('跌幅榜', 'TOP 10', list('',(d.top_losers||[]),'pct','loss'), 2, 7, 2, 16, 'rank')
+       + mCard('成交额榜', 'TOP 10', list('',(d.turnover_leaders||[]),'amount','amount'), 2, 7, 4, 16, 'rank')
+       + mCard('活跃换手', 'TOP 10', list('',(d.active_leaders||[]),'active','active'), 2, 7, 6, 16, 'rank');
 }
-function mktPick(code, name){
+function mktPick(code, name, lid){
   try{ selectStock(code); }catch(e){}
-  try{ stkOpen(code, name, (mktSt.data&&mktSt.data.top_gainers)||[] .map(function(r){return {code:r.code,name:r.name};})); }catch(e){}
+  try{
+    /* v2.404: 只有四张榜(传了 lid)才带榜单列表; 其它入口只给单只, 不给一份
+       「涨幅榜」列表让用户以为能顺着翻 —— 那正是用户报的串档感 */
+    var _lst = null;
+    if(lid && window._mktPickLists && window._mktPickLists[lid]) _lst = window._mktPickLists[lid];
+    stkOpen(code, name, (_lst && _lst.length) ? _lst : null);
+  }catch(e){}
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -19869,8 +19938,21 @@ window.ldrLhbPick = ldrLhbPick; window.ldrLhbInst = ldrLhbInst; window.ldrLhbDep
   <!-- v2.403 (用户 m09109): 左上信息区 + 日K/分时左右并列 -->
   <div id="stk-info" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:4px 12px 5px;border-bottom:1px solid var(--bd);background:var(--bg1);flex:0 0 auto;overflow:hidden"></div>
   <div style="flex:1;min-height:0;display:flex;flex-direction:row;gap:1px;background:var(--bd)">
-    <div id="stk-kchart" style="flex:1 1 50%;min-width:0;min-height:0;background:var(--win)"></div>
-    <div id="stk-mchart" style="flex:1 1 50%;min-width:0;min-height:0;background:var(--win)"></div>
+    <!-- v2.404 (用户 m09720): 照 TSP 给每栏加标题 + 当日读数; 左右 1.3 : 1 -->
+    <div style="flex:1.3 1 0;min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--win)">
+      <div style="flex:0 0 auto;display:flex;align-items:baseline;gap:8px;padding:3px 10px;border-bottom:1px solid var(--bd);overflow:hidden">
+        <span style="font-size:11px;font-weight:600;color:var(--tx1);white-space:nowrap">日K</span>
+        <span id="stk-kread" style="font-size:11px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></span>
+      </div>
+      <div id="stk-kchart" style="flex:1;min-width:0;min-height:0;background:var(--win)"></div>
+    </div>
+    <div style="flex:1 1 0;min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--win)">
+      <div style="flex:0 0 auto;display:flex;align-items:baseline;gap:8px;padding:3px 10px;border-bottom:1px solid var(--bd);overflow:hidden">
+        <span style="font-size:11px;font-weight:600;color:var(--tx1);white-space:nowrap">分时走势</span>
+        <span id="stk-mread" style="font-size:11px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></span>
+      </div>
+      <div id="stk-mchart" style="flex:1;min-width:0;min-height:0;background:var(--win)"></div>
+    </div>
   </div>
 </div>
 <!-- ══════════════════════════════════════════════════════════════════════════
