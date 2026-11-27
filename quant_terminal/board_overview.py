@@ -389,10 +389,17 @@ def _limit_block():
             'code': str(s.get('code') or ''),
             'name': s.get('name') or '',
             'pct': _num(s.get('pct')),
+            # v2.403 (用户 m09109): 今天首次封板时间 "HH:MM", 前端按它排代表股
+            'first_time': str(s.get('first_time') or '').strip(),
         })
     out['max_boards'] = max(tiers.keys()) if tiers else 0
+    # v2.403 (用户 m09109): 代表股按「今天首次封板时间」早 -> 晚; 取不到时间的排后面, 再按涨幅降序
+    def _stk_key(x):
+        _ft = (x.get('first_time') or '').strip()
+        _pc = -(x.get('pct') or 0)
+        return (0, _ft, _pc) if _ft else (1, '', _pc)
     out['tiers'] = [{'boards': b, 'count': len(tiers[b]),
-                     'stocks': sorted(tiers[b], key=lambda x: -x['pct'])}
+                     'stocks': sorted(tiers[b], key=_stk_key)}
                     for b in sorted(tiers.keys(), reverse=True)]
     out['sealed_ready'] = up_n > 0
     return out

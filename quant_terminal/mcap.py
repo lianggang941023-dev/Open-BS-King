@@ -38,6 +38,8 @@ _STATE_FILE = os.path.join(BASE_DIR, 'kline_data', '.mcap_written.json')  # {cod
 
 # ---- 进程内缓存 (供 /api/mcap 一次性下发全市场) ----
 _CACHE = {'at': 0.0, 'map': {}}
+# v2.403: 自由流通股本表 (万股) —— 与 _CACHE['map'] 同一次扫描产出, 供窗口版K线算实际换手率
+_CACHE_FREE = {'at': 0.0, 'map': {}}
 _LOCK = threading.Lock()
 _WRITE_STATE = None
 
@@ -508,10 +510,48 @@ def sync_from_snapshots(force=True, log=print):
     return dict(stat, snap=len(caps), files=len(used), skipped=skipped, msg=msg)
 
 
+def load_pair(force=False, ttl=300):
+    """一次扫描同时拿两表 → ({裸码:(总,流)}, {裸码: 自由流通股本(万股)})
+
+    v2.403: 原来 /api/mcap 只给市值; 窗口版 K 线要算「实际换手率」= 成交量(手)/自由流通股本(万股),
+            再单独扫一遍目录要翻倍 IO, 所以合并成一次 read_three 同时填两张缓存。
+    """
+    now = time.time()
+    with _LOCK:
+        if (not force and _CACHE['map'] and _CACHE_FREE['map']
+                and (now - _CACHE['at']) < ttl
+                and (now - _CACHE_FREE['at']) < ttl):
+            return _CACHE['map'], _CACHE_FREE['map']
+    d = daily_dir()
+    cap, fre = {}, {}
+    try:
+        names = os.listdir(d)
+    except OSError:
+        names = []
+    for fn in names:
+        if not fn.lower().endswith('.csv'):
+            continue
+        t, f, e = read_three(os.path.join(d, fn))
+        if t is not None or f is not None:
+            cap[bare(fn[:-4])] = (t, f)
+        if e is not None:
+            fre[bare(fn[:-4])] = e
+    with _LOCK:
+        _CACHE['map'] = cap
+        _CACHE['at'] = now
+        _CACHE_FREE['map'] = fre
+        _CACHE_FREE['at'] = now
+    return cap, fre
+
+
 def payload():
-    """/api/mcap 响应体: {裸码: [总市值, 流通市值]} (亿元)"""
-    m = load_map()
-    return {'mcap': {k: [v[0], v[1]] for k, v in m.items()}, 'count': len(m)}
+    """/api/mcap 响应体: {裸码: [总市值, 流通市值]} (亿元) + free {裸码: 自由流通股本(万股)}
+
+    v2.403: 多给一张 free 表 — 前端窗口版 K 线「换手(实际换手率)」用它。
+    """
+    m, fr = load_pair()
+    return {'mcap': {k: [v[0], v[1]] for k, v in m.items()},
+            'free': fr, 'count': len(m)}
 
 
 # ---- 腾讯 qt 实时市值 (v2.132 2026-10-08) ----

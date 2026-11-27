@@ -2677,6 +2677,8 @@ function readTheme(){
   TH.ma5=g('--ma5');   TH.ma10=g('--ma10'); TH.ma21=g('--ma21');
   TH.ma55=g('--ma55'); TH.ma120=g('--ma120');
   TH.limitUp=g('--limit-up'); TH.limitDn=g('--limit-dn');
+  // v2.403 (用户 m09109): 窗口版K线涨跌停标注要用的三个色
+  TH.purple=g('--purple'); TH.orange=g('--orange'); TH.lyellow=g('--lyellow');
 }
 readTheme();   // ⚠ 必须在第一次 drawChart 之前 (init() 在文件末尾才跑, 这里已经够早)
 // ============================================================
@@ -3784,7 +3786,7 @@ if(window.MutationObserver)new MutationObserver(function(muts){
 //   数据: 后端 /api/mcap 一次性下发全市场 (读本地K线新列, 5分钟缓存) —— 前端只查表, 不再逐票请求。
 //   口径: 底层存「亿元」数值 (1.57万亿 → 15700) —— 排序必须比数值; 只有显示才换算成 万亿/亿。
 //   ⚠️ 市值只写在新K线的最新一行 → 后端从尾部往前找最近一行有值的 (⚡快照更新追加新行也不会丢)。
-var MCAP={}, _mcapLoading=0;
+var MCAP={}, MCAP_FREE={}, _mcapLoading=0;   /* v2.403: MCAP_FREE = 自由流通股本(万股) */
 function bareCode(c){c=String(c==null?'':c).toUpperCase();return /^(SH|SZ|BZ|BJ)\d{6}$/.test(c)?c.slice(2):c;}
 
 // ---- v2.147 (2026-10-16): 20 日涨停数 → 「代码」列染色 (用户 m05012 定案) ----
@@ -3857,6 +3859,7 @@ async function mcapLoad(){
   try{
     var d=await api('/api/mcap');
     if(d&&d.mcap)MCAP=d.mcap;
+    if(d&&d.free){MCAP_FREE=d.free; if(typeof stkPaintInfo==='function'&&stkSt.open)stkPaintInfo();}
   }catch(e){}
   _mcapLoading=0;
   // v2.207: 热榜全量窗口的两列市值同样吃 MCAP 表 —— 表回来了就补画(窗口没开时这一步是空转)。
@@ -16579,7 +16582,9 @@ window.boardToggleHeat=boardToggleHeat; window.boardQuickSearch=boardQuickSearch
    否则会和 winPop 的 transform 动画打架）。
    ══════════════════════════════════════════════════════════════════════════ */
 var stkSt = {open:false, view:'daily', code:'', name:'', list:[], ix:-1,
-             months:6, big:false, chart:null, seq:0};
+             months:6, big:false, chart:null, seq:0,
+             /* v2.403 (用户 m09109): 日K/分时左右并列 —— 两个独立图表实例 */
+             kchart:null, mchart:null, kdata:null, mdata:null};
 
 function stkTag(code){
   var c=String(code||'');
@@ -16600,6 +16605,8 @@ function stkLayout(){
   w.style.left   = Math.round((vw-W)/2)+'px';
   w.style.top    = Math.round((vh-H)/2)+'px';
   if(stkSt.chart){ try{ stkSt.chart.resize(); }catch(e){} }
+  if(stkSt.kchart){ try{ stkSt.kchart.resize(); }catch(e){} }
+  if(stkSt.mchart){ try{ stkSt.mchart.resize(); }catch(e){} }
 }
 
 function stkOpen(code, name, list){
@@ -16627,6 +16634,8 @@ function stkClose(){
   var w=$('stk-win'), mk=$('stk-mask');
   stkSt.open=false;
   if(stkSt.chart){ try{ stkSt.chart.dispose(); }catch(e){} stkSt.chart=null; }
+  if(stkSt.kchart){ try{ stkSt.kchart.dispose(); }catch(e){} stkSt.kchart=null; }
+  if(stkSt.mchart){ try{ stkSt.mchart.dispose(); }catch(e){} stkSt.mchart=null; }
   if(mk) mk.style.display='none';
   if(w) winShrink(w, function(){ w.style.display='none'; });
 }
@@ -16644,6 +16653,55 @@ function stkNav(d){
 function stkSetView(v){ stkSt.view=v; stkPaintHead(); stkLoad(); }
 function stkSetRange(m){ stkSt.months=m; stkPaintHead(); if(stkSt.view==='daily') stkLoad(); }
 function stkToggleBig(){ stkSt.big=!stkSt.big; stkLayout(); stkPaintHead(); }
+
+/* v2.403 (用户 m09109): 窗口版K线左上信息区 —— 现价/涨跌值/涨跌幅/市值/流通值/
+   换手(实际换手率)/开收高低/实体涨跌幅/振幅/成交量 */
+function stkInfoCell(lbl, val, clr){
+  return '<span style="display:inline-flex;align-items:baseline;gap:3px;white-space:nowrap">'
+    + '<span style="font-size:9px;color:var(--tx3)">'+lbl+'</span>'
+    + '<span style="font-size:11px;font-weight:600;font-family:ui-monospace,Consolas,monospace;color:'+(clr||'var(--tx1)')+'">'+val+'</span>'
+    + '</span>';
+}
+function stkPaintInfo(){
+  var el=$('stk-info'); if(!el) return;
+  var d=stkSt.kdata;
+  if(!d || !d.ohlc || !d.ohlc.length){ el.innerHTML=''; return; }
+  var n=d.ohlc.length, last=d.ohlc[n-1];
+  var o=+last[0], c=+last[1], lo=+last[2], hi=+last[3];
+  var prev = n>1 ? +d.ohlc[n-2][1] : o;
+  var chg = c - prev;
+  var chgp = prev ? (chg/prev*100) : 0;
+  var clr = chg>0 ? 'var(--up)' : (chg<0 ? 'var(--dn)' : 'var(--tx2)');
+  var vol = (d.volume && d.volume.length) ? +d.volume[n-1] : 0;
+  var bare = bareCode(stkSt.code);
+  var mm = (typeof MCAP!=='undefined') ? MCAP[bare] : null;
+  var fr = (typeof MCAP_FREE!=='undefined') ? MCAP_FREE[bare] : null;
+  var capT = (mm && mm[0]!=null) ? (mm[0].toFixed(2)+'亿') : '--';
+  var capF = (mm && mm[1]!=null) ? (mm[1].toFixed(2)+'亿') : '--';
+  /* 实际换手率(%) = 成交量(手) ÷ 自由流通股本(万股) */
+  var turn = (fr && fr>0 && vol>0) ? (vol/fr) : null;
+  var turnTx = (turn==null) ? '--' : (turn.toFixed(2)+'%');
+  var body = o ? ((c-o)/o*100) : 0;
+  var bodyClr = body>0 ? 'var(--up)' : (body<0 ? 'var(--dn)' : 'var(--tx2)');
+  var amp = prev ? ((hi-lo)/prev*100) : 0;
+  var s='';
+  s += stkInfoCell('现价', (c?c.toFixed(2):'--'), clr);
+  s += stkInfoCell('涨跌', ((chg>0?'+':'')+chg.toFixed(2)), clr);
+  s += stkInfoCell('涨幅', ((chgp>0?'+':'')+chgp.toFixed(2)+'%'), clr);
+  s += stkInfoCell('市值', capT, 'var(--tx1)');
+  s += stkInfoCell('流通值', capF, 'var(--tx1)');
+  s += stkInfoCell('换手', turnTx, 'var(--tx1)');
+  s += stkInfoCell('开', (o?o.toFixed(2):'--'), o>=prev?'var(--up)':'var(--dn)');
+  s += stkInfoCell('高', (hi?hi.toFixed(2):'--'), hi>=prev?'var(--up)':'var(--dn)');
+  s += stkInfoCell('低', (lo?lo.toFixed(2):'--'), lo>=prev?'var(--up)':'var(--dn)');
+  s += stkInfoCell('收', (c?c.toFixed(2):'--'), c>=prev?'var(--up)':'var(--dn)');
+  s += stkInfoCell('实体', ((body>0?'+':'')+body.toFixed(2)+'%'), bodyClr);
+  s += stkInfoCell('振幅', (amp?amp.toFixed(2)+'%':'--'), 'var(--tx1)');
+  s += stkInfoCell('量', (vol>=1e4?(vol/1e4).toFixed(0)+'万手':(vol?vol.toFixed(0)+'手':'--')), 'var(--tx1)');
+  var _last = '<span style="margin-left:auto;font-size:9px;color:var(--tx3)">'+(d.last_date||'')+'</span>';
+  el.innerHTML = s + _last;
+}
+window.stkPaintInfo=stkPaintInfo;
 
 function stkPaintHead(){
   var t=stkTag(stkSt.code);
@@ -16666,6 +16724,8 @@ function stkPaintHead(){
         ((stkSt.view==='daily')?on:off);
   if(b2) b2.style.cssText='font-size:11px;padding:2px 9px;border-radius:3px;cursor:pointer;border:none;'+
         ((stkSt.view==='minute')?on:off);
+  /* v2.403: 日K 与分时已经左右并列, 视图切换按钮隐藏(连外框一起) */
+  try{ if(b1&&b1.parentNode) b1.parentNode.style.display='none'; }catch(e){}
   var r1=$('stk-r-6'), r2=$('stk-r-12');
   if(r1) r1.style.cssText='font-size:11px;padding:2px 9px;border-radius:3px;cursor:pointer;border:none;'+
         ((stkSt.months<=6)?on:off);
@@ -16676,46 +16736,147 @@ function stkPaintHead(){
   var bg2=$('stk-big'); if(bg2) bg2.title = stkSt.big ? '还原' : '放大到全屏';
 }
 
+/* v2.403 (用户 m09109): 日K + 分时**同时**拉、同时画, 左右并列 */
+function stkLoading(box){
+  if(box) box.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--tx3);font-size:11px">加载中…</div>';
+}
+function stkErrBox(box, msg){
+  if(box) box.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--red);font-size:11px">'+escAttr(msg)+'</div>';
+}
 async function stkLoad(){
   var my=++stkSt.seq;
-  var box=$('stk-chart');
-  if(box) box.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--tx3);font-size:11px">加载中…</div>';
-  try{
-    if(stkSt.view==='daily'){
-      var d=await api('/api/kline?code='+encodeURIComponent(stkSt.code));
-      if(my!==stkSt.seq) return;
-      if(d._err||d.error||!d.ohlc||!d.ohlc.length){
-        if(box) box.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--red);font-size:11px">'+escAttr(d.error||d._err||'无K线数据')+'</div>';
-        return;
-      }
-      if(d.name && !stkSt.name){ stkSt.name=d.name; stkPaintHead(); }
-      stkDrawDaily(d);
-    }else{
-      var m=await api('/api/minute?code='+encodeURIComponent(stkSt.code));
-      if(my!==stkSt.seq) return;
-      if(m._err||m.error||!m.points||m.points.length<5){
-        if(box) box.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--red);font-size:11px">'+escAttr(m.error||m._err||'分时数据不足')+'</div>';
-        return;
-      }
-      if(m.name && !stkSt.name){ stkSt.name=m.name; stkPaintHead(); }
-      stkDrawMinute(m);
-    }
-  }catch(e){
-    if(box) box.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--red);font-size:11px">'+escAttr(String(e&&e.message||e))+'</div>';
+  var kb=$('stk-kchart'), mb=$('stk-mchart');
+  stkLoading(kb); stkLoading(mb);
+  var code=encodeURIComponent(stkSt.code);
+  /* 并发: 两个接口互不依赖, 串行会多等一个来回 */
+  var pd = api('/api/kline?code='+code).catch(function(e){ return {_err:String(e&&e.message||e)}; });
+  var pm = api('/api/minute?code='+code).catch(function(e){ return {_err:String(e&&e.message||e)}; });
+  var d, m;
+  try{ d = await pd; }catch(e){ d = {_err:String(e&&e.message||e)}; }
+  try{ m = await pm; }catch(e){ m = {_err:String(e&&e.message||e)}; }
+  if(my!==stkSt.seq) return;
+  if(d && !d._err && !d.error && d.ohlc && d.ohlc.length){
+    if(d.name && !stkSt.name){ stkSt.name=d.name; stkPaintHead(); }
+    stkSt.kdata=d;
+    stkDrawDaily(d);
+  }else{
+    stkSt.kdata=null;
+    stkErrBox(kb, (d&&(d.error||d._err))||'无K线数据');
   }
+  if(m && !m._err && !m.error && m.points && m.points.length>=5){
+    if(m.name && !stkSt.name){ stkSt.name=m.name; stkPaintHead(); }
+    stkSt.mdata=m;
+    stkDrawMinute(m);
+  }else{
+    stkSt.mdata=null;
+    stkErrBox(mb, (m&&(m.error||m._err))||'分时数据不足');
+  }
+  stkPaintInfo();
 }
 
-function stkFresh(fromDiv){
-  var box=$('stk-chart');
-  if(box) box.innerHTML='';
-  if(stkSt.chart){ try{ stkSt.chart.dispose(); }catch(e){} stkSt.chart=null; }
+/* v2.403: 按容器 id 建图 (原来写死 #stk-chart) */
+function stkFresh(boxId){
+  var box=$(boxId||'stk-kchart');
+  if(!box) return null;
+  box.innerHTML='';
+  var which = (boxId==='stk-mchart') ? 'mchart' : 'kchart';
+  if(stkSt[which]){ try{ stkSt[which].dispose(); }catch(e){} stkSt[which]=null; }
   return echarts.init(box);
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   v2.403 (用户 m09109): 日K 涨跌停标注
+     涨停首板「板」/ 连板数字  → 金色   TH.gold
+     炸板「炸」               → 紫色   TH.purple
+     跌停「停」/ 连跌数字      → 绿色   TH.dn
+     撬板「撬」               → 淡黄   TH.lyellow
+   判据 (2026-11-27 用 423 只涨停池 + 41 只炸板池实测校准):
+     涨停价 = round_half_up(昨收 × (1+幅度)) —— 不能用 9.8% 阈值, 会漏 9.77 那批
+     幅度: 北交(43/83/87/88/92) 30% / 双创(300/301/302/688/689) 20% / 其余 10%
+           ST(名称含 ST 或 退) 且属主板档 → 5%
+     优先级 ld > lu > brk > rec (一天只画一个)
+   ══════════════════════════════════════════════════════════════════════ */
+function stkLimitPct(code, name, d){
+  var c=String(code||'');
+  if(/^(43|83|87|88|92)/.test(c)) return 30.0;
+  if(/^(300|301|302|688|689)/.test(c)) return 20.0;
+  var n=String(name||'').toUpperCase();
+  if(n.indexOf('ST')>=0 || String(name||'').indexOf('退')>=0){
+    /* v2.403: 名字带 ST 不代表一直是 5% —— 有些票摘帽/戴帽时间点对不上, 或者名字缓存过期。
+       用最近 250 根的实际波动自检: 只要出现过 |涨跌幅|>5.6% 的一天, 就说明它按 10% 在走,
+       不能按 5% 算 (否则会凭空多出一堆假「停」「撬」)。*/
+    try{
+      var oh=(d&&d.ohlc)||[], st=Math.max(0, oh.length-250), hit=false;
+      for(var i=st+1;i<oh.length;i++){
+        var p0=+oh[i-1][1], p1=+oh[i][1];
+        if(p0>0 && Math.abs(p1/p0-1)*100 > 5.6){ hit=true; break; }
+      }
+      if(hit) return 10.0;
+    }catch(e){}
+    return 5.0;
+  }
+  return 10.0;
+}
+function _stkRound2(v){
+  /* 四舍五入到分 (JS toFixed 是银行家舍入, 手动来) */
+  var neg = v < 0;
+  var s = Math.floor(Math.abs(v)*100 + 0.5)/100;
+  return neg ? -s : s;
+}
+function stkLimitMarks(d){
+  var xs=d.dates||[], oh=d.ohlc||[];
+  var pct=stkLimitPct(d.code, d.name, d);
+  var tol=0.005, n=xs.length;
+  var luRun=0, ldRun=0;
+  var items=[];
+  for(var i=1;i<n;i++){
+    var prev=+oh[i-1][1];
+    if(!(prev>0)) { luRun=0; ldRun=0; continue; }
+    var upP=_stkRound2(prev*(1+pct/100.0));
+    var dnP=_stkRound2(prev*(1-pct/100.0));
+    var c=+oh[i][1], l=+oh[i][2], h=+oh[i][3];
+    var lu = c >= upP - tol;
+    var ld = c <= dnP + tol;
+    var brk = (!lu) && (h >= upP - tol);
+    var rec = (!ld) && (l <= dnP + tol);
+    if(ld)      { ldRun++; luRun=0; }
+    else if(lu) { luRun++; ldRun=0; }
+    else        { luRun=0; ldRun=0; }
+    var label='', col='', above=true;
+    if(ld){
+      label = (ldRun>=2) ? String(ldRun) : '停';
+      col=TH.dn; above=false;
+    }else if(lu){
+      label = (luRun>=2) ? String(luRun) : '板';
+      col=TH.gold; above=true;
+    }else if(brk){
+      label='炸'; col=TH.purple; above=true;
+    }else if(rec){
+      label='撬'; col=TH.lyellow; above=false;
+    }else{
+      continue;
+    }
+    items.push({
+      name: label,
+      coord: [xs[i], above ? h : l],
+      value: label,
+      symbol: 'circle',
+      symbolSize: 1,
+      label: {
+        show: true, position: above ? 'top' : 'bottom',
+        distance: 2, formatter: label,
+        color: col, fontSize: 11, fontWeight: 'bold',
+        textBorderColor: TH.bg1, textBorderWidth: 2
+      }
+    });
+  }
+  return items;
+}
+
 function stkDrawDaily(d){
-  var box=$('stk-chart'); if(!box) return;
-  var ch=stkFresh();
-  stkSt.chart=ch;
+  var box=$('stk-kchart'); if(!box) return;
+  var ch=stkFresh('stk-kchart'); if(!ch) return;
+  stkSt.kchart=ch; stkSt.chart=ch;
   var xs=d.dates||[], oh=d.ohlc||[], vol=d.volume||[], mas=d.mas||{};
   var n=xs.length;
   var want = stkSt.months>=12 ? 250 : 120;
@@ -16737,6 +16898,11 @@ function stkDrawDaily(d){
     if(arr&&arr.length) ser.push({name:MA[j][2], type:'line', data:arr, xAxisIndex:0, yAxisIndex:0,
       symbol:'none', smooth:false, lineStyle:{width:1, color:MA[j][1]}, emphasis:{disabled:true}});
   }
+  /* v2.403: 涨跌停标注挂在 K 线 series 的 markPoint 上 (必须在 setOption 之前) */
+  try{
+    var _mk = stkLimitMarks(d);
+    if(_mk.length && ser[0]) ser[0].markPoint = {symbol:'circle', symbolSize:1, silent:true, data:_mk};
+  }catch(e){}
   ch.setOption({
     animation:false, backgroundColor:'transparent',
     textStyle:{color:TH.tx2, fontSize:10},
@@ -16773,9 +16939,9 @@ function stkDrawDaily(d){
 }
 
 function stkDrawMinute(d){
-  var box=$('stk-chart'); if(!box) return;
-  var ch=stkFresh();
-  stkSt.chart=ch;
+  var box=$('stk-mchart'); if(!box) return;
+  var ch=stkFresh('stk-mchart'); if(!ch) return;
+  stkSt.mchart=ch; stkSt.chart=ch;
   var pts=d.points||[], prev=+d.prev_close||0;
   var times=[], pcts=[], amts=[];
   for(var i=0;i<pts.length;i++){
@@ -16826,7 +16992,7 @@ function stkDrawMinute(d){
 
 window.stkOpen=stkOpen; window.stkClose=stkClose; window.stkNav=stkNav;
 window.stkSetView=stkSetView; window.stkSetRange=stkSetRange; window.stkToggleBig=stkToggleBig;
-window.stkFresh=stkFresh;
+window.stkFresh=stkFresh; window.stkDrawDaily=stkDrawDaily; window.stkDrawMinute=stkDrawMinute;
 </script>
 
 <script>
@@ -17607,7 +17773,7 @@ function mIcon(k){
     + '<path d="' + d + '"/></svg>';
 }
 /* 卡壳: x/y/w/h 是 12 列表格坐标(x 从 0 起), 直接落到 grid-column / grid-row */
-function mCard(title, sub, body, w, h, x, y, icon){
+function mCard(title, sub, body, w, h, x, y, icon, subClick){
   var st = 'grid-column:' + ((x|0) + 1) + ' / span ' + (w||3) + ';'
          + 'grid-row:' + ((y|0) + 1) + ' / span ' + (h||8) + ';'
          + 'display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;'
@@ -17623,7 +17789,8 @@ function mCard(title, sub, body, w, h, x, y, icon){
     +     (icon ? mIcon(icon) : '')
     +     '<span style="font-size:12px;font-weight:600;color:var(--tx0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + mEsc(title) + '</span>'
     +   '</div>'
-    +   '<span style="flex:0 0 auto;font-size:10px;color:var(--tx2);font-family:ui-monospace,Consolas,monospace;white-space:nowrap">' + mEsc(sub || '') + '</span>'
+    +   '<span' + (subClick ? ' onclick="' + subClick + '" title="点击查看连板梯队" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px"' : '')
+    +   ' style="flex:0 0 auto;font-size:10px;color:var(--tx2);font-family:ui-monospace,Consolas,monospace;white-space:nowrap">' + mEsc(sub || '') + '</span>'
     + '</div>'
     + '<div style="flex:1;min-height:0;overflow:hidden">' + body + '</div></section>';
 }
@@ -17876,9 +18043,12 @@ function MKT_KPI(d){
     {t:'强势 / 弱势', v:'<span style="color:var(--up)">'+b.strong_up+'</span><span style="color:var(--tx3)"> / </span><span style="color:var(--dn)">'+b.strong_down+'</span>',
      s:'涨跌 ≥3%'},
     {t:'涨停 / 跌停', v:'<span style="color:var(--up)">'+l.limit_up+'</span><span style="color:var(--tx3)"> / </span><span style="color:var(--dn)">'+l.limit_down+'</span>',
-     s:'封板率 '+mNum(l.seal_rate,0)+'%'},
-    {t:'最高连板', v:'<span style="color:var(--gold)">'+(l.max_boards||0)+'</span><span style="font-size:9px;color:var(--tx2)"> 板</span>',
-     s:(l.tiers&&l.tiers[0]&&l.tiers[0].stocks?l.tiers[0].stocks.slice(0,3).map(function(x){return x.name}).join(' · '):'')},
+     s:'封板率 '+mNum(l.seal_rate,0)+'%', onclick:'mktGoLadder()'},
+    {t:'最高连板', v:'<span onclick="event.stopPropagation();mktGoLadder()" title="点击打开连板梯队" style="cursor:pointer;color:var(--gold)">'+(l.max_boards||0)+'</span><span style="font-size:9px;color:var(--tx2)"> 板</span>',
+     s:'', sh:(l.tiers&&l.tiers[0]&&l.tiers[0].stocks?l.tiers[0].stocks.slice(0,3).map(function(x){
+           var _c=mEsc(String(x.code||'')).replace(/'/g,"\\'"), _n=mEsc(String(x.name||'')).replace(/'/g,"\\'");
+           return '<span onclick="event.stopPropagation();mktPick(\''+_c+'\',\''+_n+'\')" title="点击查看K线" style="cursor:pointer">'+mEsc(x.name)+'</span>';
+         }).join(' · '):'')},
     {t:'成交额', v:'<span style="color:var(--tx0)">'+mBig((a.total||0)*1e8)+'</span>',
      s:'均额 '+mNum(a.avg,2)+'亿'},
     {t:'换手 / 量比', v:'<span style="color:var(--tx0)">'+mNum(ac.avg_turnover,1)+'%</span><span style="color:var(--tx3)"> / </span><span style="color:var(--tx0)">'+mNum(ac.vol_ratio,2)+'</span>',
@@ -17889,12 +18059,13 @@ function MKT_KPI(d){
      至少 47px ⇒ 副行被裁。改成 h3 = 108px 后内容区 72px，且改成 flex 纵向居中分布，刚好铺满不空。 */
   var inner = '<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px;height:100%">';
   cells.forEach(function(c){
-    inner += '<div style="min-width:0;overflow:hidden;border-radius:8px;border:1px solid var(--bd);'
+    inner += '<div' + (c.onclick ? ' onclick="' + c.onclick + '"' : '')
+      + ' style="' + (c.onclick ? 'cursor:pointer;' : '') + 'min-width:0;overflow:hidden;border-radius:8px;border:1px solid var(--bd);'
       + 'background:var(--c-card);padding:6px 8px;backdrop-filter:blur(4px);'
       + 'display:flex;flex-direction:column;justify-content:center;gap:3px">'
       + '<div style="font-size:11px;color:var(--tx2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15">'+mEsc(c.t)+'</div>'
       + '<div style="font-family:ui-monospace,Consolas,monospace;font-size:19px;font-weight:600;line-height:1.05;white-space:nowrap">'+c.v+'</div>'
-      + '<div style="font-size:10px;color:var(--tx2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.15">'+mEsc(c.s)+'</div></div>';
+      + '<div style="font-size:10px;color:var(--tx2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.15">'+(c.sh ? c.sh : mEsc(c.s))+'</div></div>';
   });
   inner += '</div>';
   return mCard('大盘指标', '实时快照 · '+mEsc(d.date||''), inner, 12, 3, 0, 0, 'rank');
@@ -18059,9 +18230,9 @@ function MKT_TREND(d){
 /* ── ⑤ 涨停梯队 ───────────────────────────────────────────────────────── */
 function MKT_LADDER(d){
   var l=d.limit||{}, tiers=(l.tiers||[]).filter(function(t){ return (t.boards||0)>=2; }).slice(0,6);
-  var body = '<div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px">'
+  var body = '<div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px;width:100%">'
     + '<span style="font-size:9px;color:var(--tx3)">封板率</span>'
-    + '<span style="font-size:13px;font-weight:700;color:var(--gold)">'+mNum(l.seal_rate,0)+'%</span></div>';
+    + '<span style="margin-left:auto;font-size:13px;font-weight:700;color:var(--gold)">'+mNum(l.seal_rate,0)+'%</span></div>';
   if(!tiers.length){ body += '<div style="font-size:8px;color:var(--tx3)">暂无 2 板及以上</div>'; }
   tiers.forEach(function(t){
     var col = t.boards>=5 ? 'var(--up)' : (t.boards>=3 ? 'var(--gold)' : 'var(--tx2)');
@@ -18071,12 +18242,17 @@ function MKT_LADDER(d){
       + '<div style="flex:1;height:8px;background:var(--bg0);border-radius:2px;overflow:hidden">'
       + '<div style="width:'+w+'%;height:100%;background:'+col+';opacity:.65"></div></div>'
       + '<span style="width:22px;text-align:right;font-size:9px;color:var(--tx1)">'+t.count+'</span></div>';
-    if(t.stocks && t.stocks.length<=3 && t.stocks.length>0){
-      body += '<div style="font-size:8px;color:var(--tx3);margin-left:37px;margin-bottom:2px">'
-        + t.stocks.map(function(s){ return mEsc(s.name); }).join(' · ') + '</div>';
+    /* v2.403 (用户 m09109): 每档都显示代表股, 至多 5 只, 按今天首次封板时间早->晚(后端已排好);
+       点简称打开窗口版K线。文字比原来的 --tx3 提亮一档。 */
+    if(t.stocks && t.stocks.length>0){
+      body += '<div style="font-size:9px;color:var(--tx2);margin-left:37px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+        + t.stocks.slice(0,5).map(function(s){
+            var _c=mEsc(String(s.code||'')).replace(/'/g,"\\'"), _n=mEsc(String(s.name||'')).replace(/'/g,"\\'");
+            return '<span onclick="mktPick(\''+_c+'\',\''+_n+'\')" title="点击查看K线" style="cursor:pointer">'+mEsc(s.name)+'</span>';
+          }).join(' · ') + '</div>';
     }
   });
-  return mCard('涨停梯队', '涨停 '+mNum(l.limit_up,0)+' 只', body, 3, 6, 9, 3, 'ladder');
+  return mCard('涨停梯队', '涨停 '+mNum(l.limit_up,0)+' 只', body, 3, 6, 9, 3, 'ladder', 'mktGoLadder()');
 }
 
 /* ── ⑥ 板块热度 双栏（概念 / 行业） ───────────────────────────────────── */
@@ -18090,6 +18266,16 @@ function MKT_RANKS(d){
     (list||[]).forEach(function(r,i){
       var lead = r.leader ? (r.leader.name||'') : '';
       var nm = mEsc(r.name).replace(/'/g, "\\'");
+      /* v2.403 (用户 m09109): 领涨/领跌股简称 —— 提亮 + 染红/绿 + 北创科徽章 + 可点开K线 */
+      var lcode = r.leader ? String(r.leader.code||'') : '';
+      var ltag = lcode ? mTagOf(lcode) : '';
+      var lbadge = '';
+      if(ltag){
+        var lbc = ltag==='创' ? 'var(--orange)' : (ltag==='科' ? 'var(--purple)' : 'var(--cyan)');
+        lbadge = '<span style="display:inline-flex;align-items:center;justify-content:center;height:10px;padding:0 2px;margin-left:2px;font-size:8px;border-radius:2px;color:'+lbc+';border:1px solid '+lbc+'">'+ltag+'</span>';
+      }
+      var lclr = (tone==='bear') ? 'var(--dn)' : 'var(--up)';
+      var lnq = mEsc(String(lead||'')).replace(/'/g, "\\'");
       /* v2.287d: 行内边距 4->2px、gap 5->3、两行 line-height 收到 1.08 ——
          原来 5 行要塞进 148px 但实测内容 192px，被 overflow:hidden 裁掉最后 2 行。 */
       h += '<div onclick="mktOpenBoard(\''+kind+'\',\''+nm+'\')" title="点击查看「'+mEsc(r.name)+'」板块成分股"'
@@ -18100,7 +18286,10 @@ function MKT_RANKS(d){
         + '<span style="font-size:9px;color:var(--tx3);text-align:right;font-family:ui-monospace,Consolas,monospace;line-height:1.02">'+(i+1)+'</span>'
         + '<span style="min-width:0;overflow:hidden">'
         +   '<span style="display:block;font-size:12px;color:var(--tx0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.02">'+mEsc(r.name)+'</span>'
-        +   '<span style="display:block;font-size:10px;color:var(--tx3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.02">'+(r.count||0)+'只'+(lead?(' · '+mEsc(lead)):'')+'</span>'
+        +   '<span style="display:block;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.02">'
+        +     '<span style="color:var(--tx1)">'+(r.count||0)+'只</span>'
+        +     (lead ? (' · <span onclick="event.stopPropagation();mktPick(\''+mEsc(lcode)+'\',\''+lnq+'\')" title="点击查看K线" style="cursor:pointer;font-weight:600;color:'+lclr+'">'+mEsc(lead)+'</span>'+lbadge) : '')
+        +   '</span>'
         + '</span>'
         + '<span style="font-size:12px;font-weight:600;font-family:ui-monospace,Consolas,monospace;line-height:1.02;color:'+mPctCol(r.avg_pct)+'">'+mPct(r.avg_pct)+'</span></div>';
     });
@@ -18121,6 +18310,17 @@ function MKT_RANKS(d){
   return mCard('概念热度', '点击板块看成分股', pair(d.concept_rank,'concept'), 4, 7, 0, 9, 'ladder')
        + mCard('行业热度', '点击板块看成分股', pair(d.industry_rank,'industry'), 4, 7, 4, 9, 'ladder');
 }
+/* v2.403 (用户 m09109): 市场总览里点「涨停/跌停」「最高连板」「涨停N只」→ 关总览开连板梯队 */
+function mktGoLadder(){
+  try{ if(typeof mktClose==='function' && mktSt.open) mktClose(); }catch(e){}
+  try{
+    if(typeof ldrOpen!=='function' || typeof LDR==='undefined') return;
+    /* ldrSetDir 有 early-return: 只有方向真的不同才会重载, 所以先骗一下方向 */
+    if(LDR.direction!=='up'){ LDR.direction='down'; ldrSetDir('up'); }
+    ldrOpen();
+  }catch(e){}
+}
+window.mktGoLadder=mktGoLadder;
 /* v2.287 (用户红线④): 点概念/行业热度里的板块名 -> 打开板块大窗口并选中该板块 */
 function mktOpenBoard(kind, name){
   try{
@@ -19666,7 +19866,12 @@ window.ldrLhbPick = ldrLhbPick; window.ldrLhbInst = ldrLhbInst; window.ldrLhbDep
     <button id="stk-big" class="btn sm" onclick="stkToggleBig()" style="font-size:11px;padding:0 7px" title="放大到全屏">⤢</button>
     <button class="btn sm" onclick="stkClose()" style="font-size:11px;padding:0 7px" title="关闭 (ESC 也可)">✕</button>
   </div>
-  <div id="stk-chart" style="flex:1;min-height:0;width:100%"></div>
+  <!-- v2.403 (用户 m09109): 左上信息区 + 日K/分时左右并列 -->
+  <div id="stk-info" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:4px 12px 5px;border-bottom:1px solid var(--bd);background:var(--bg1);flex:0 0 auto;overflow:hidden"></div>
+  <div style="flex:1;min-height:0;display:flex;flex-direction:row;gap:1px;background:var(--bd)">
+    <div id="stk-kchart" style="flex:1 1 50%;min-width:0;min-height:0;background:var(--win)"></div>
+    <div id="stk-mchart" style="flex:1 1 50%;min-width:0;min-height:0;background:var(--win)"></div>
+  </div>
 </div>
 <!-- ══════════════════════════════════════════════════════════════════════════
      v2.281 (2026-11-12 用户 m10425/m10906): 「涨幅RPS轮动分析」窗口
