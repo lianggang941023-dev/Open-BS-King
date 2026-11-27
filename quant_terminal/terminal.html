@@ -4582,7 +4582,7 @@ function startScanPoll(){
       // 否则双击池按钮前若单击过模式按钮, 那条老轮询会抢着刷表格/响铃/误判完成。
       if(window._batch){clearInterval(window._pollTimer);
         rbSet('btn-scan-auction','scan',false); return;}
-      // v2.331 (用户 m24382): 09:27:20 自动跑竞价时也让按钮睁眼。
+      // v2.331 (用户 m24382): 自动跑竞价时也让按钮睁眼。 (v2.397: 09:25:30)
       //   判据必须用 SCAN_STATE(经 /api/status 的 scan.mode/scan.running),
       //   不能用 auto_task 的 slots[].running —— 那个任务起完线程就结束了。
       rbSet('btn-scan-auction','scan',!!(st.scan&&st.scan.running&&st.scan.mode==='auction'));
@@ -6882,7 +6882,7 @@ function atoAfterOk(ev,fresh){
       fetchSectorZt();                   // 行业涨停数 (梯队列)
       pmaSyncFromDisk(curLines());       // v2.160: 上级行业(90类) —— 落盘已更新, 把缓存同步过来
     }else if(k==='auction'){
-      // v2.331（用户 m24382）：09:27:20 自动跑「竞价打板」—— 前端必须自己把结果搬上屏。手点时是 startScan()
+      // v2.331（用户 m24382）：自动跑「竞价打板」—— 前端必须自己把结果搬上屏。 (v2.397: 09:25:30) 手点时是 startScan()
       //   末尾调 listenSSE() + startScanPoll()；自动任务是在服务端线程里发起扫描的，那两样都没建立 ⇒ 扫完浏览器
       //   一无所知。这里补 startScanPoll()：它每 3 秒查 /api/status、扫完自己 loadResults()+响铃，**与手点走同一条
       //   完成判定**(不另写一套，两套判定迟早不一致)。事件是「任务已发起」时发的(不等扫描完) ⇒ 只能起轮询。
@@ -8752,7 +8752,7 @@ function resetTableHead(headMode){
     // v2.292/v2.341：「竞价占比」改名「竞总比」并加一层「竞昨比」——竞总比 = 竞价额 ÷ 昨日全天成交额；
     //   竞昨比 = 竞价额 ÷ 昨日竞价额，显示 xN(150% → x1.5)。两档**点表头切换**、状态进 localStorage。
     midTh='<th class="th-flip" data-col="auct_ratio" onclick="qsFlipRatio(event)" style="width:60px" title="竞总比 = 竞价成交额 ÷ 昨日全天成交额 (入选区间 >=2%, v2.296 起不设上限: 太小=没人认可, 越大=竞价阶段资金越关注); 竞昨比 = 今日竞价额 ÷ 昨日竞价额 (x1.5 = 今天是昨天的 150%, 昨日竞价额只能回溯最近5个交易日, 更早显示 --)"><span class="hdr-swap"><i>竞总比</i><i>竞昨比</i></span></th><th data-col="vol_ratio" onclick="sortTable(\'vol_ratio\')" style="width:50px" title="量比 = 竞价量 ÷ (前5日均量 ÷ 240) — 入选条件 >1">量比</th><th data-col="seal_rate" onclick="sortTable(\'seal_rate\')" style="width:56px" title="封板率 (v2.274) = 最近500根K线里「收盘涨停」根数 ÷ 「最高价涨幅>9.5%」根数 × 100% — 分母按最高价算: 盘中摸过9.5%就算一次(含竞价一字/炸板回落), 分子要收盘真封住。K线不足500根则用全部。分母为0(从没摸过9.5%)显示 --">封板率</th>';
-    recTh='<th data-col="turnover" onclick="sortTable(\'turnover\')" style="width:56px" title="换手 = 实际换手率 = 成交量 ÷ 自由流通股本 (v2.274)。10:00 前显示昨日全天换手(方便 9:27 选股), 10:00 后显示当日实时换手(看这只票有没有在出货); 鼠标悬停两行都显示">换手</th><th data-col="verdict_tx" onclick="sortTable(\'verdict_tx\')" style="width:52px" title="结论: 主推(红) / 备选(橙) / 备选*(金) / 观察(灰) / 淘汰(暗) — 区间 4.5%~6% 内按**竞总比降序**取前三(竞总比越大越优先, v2.296 起不设上限); 悬停看逐条判定原因">结论</th>';
+    recTh='<th data-col="turnover" onclick="sortTable(\'turnover\')" style="width:56px" title="换手 = 实际换手率 = 成交量 ÷ 自由流通股本 (v2.274)。10:00 前显示昨日全天换手(方便 9:25 竞价选股), 10:00 后显示当日实时换手(看这只票有没有在出货); 鼠标悬停两行都显示">换手</th><th data-col="verdict_tx" onclick="sortTable(\'verdict_tx\')" style="width:52px" title="结论: 主推(红) / 备选(橙) / 备选*(金) / 观察(灰) / 淘汰(暗) — 区间 4.5%~6% 内按**竞总比降序**取前三(竞总比越大越优先, v2.296 起不设上限); 悬停看逐条判定原因">结论</th>';
   }else if(headMode==='rebound'){
     // v2.257 (2026-11-07) 超跌反弹仍用**14 列**: 四个 mid 位 → 距百低/5日低/探底/距百高;
     //   第13列 recTh → 变体(①②③), 悬停可看百高百低的日期与完整判定
@@ -8938,7 +8938,7 @@ function pxDistRecalc(r, price, vol){
   //   换手 = 实际换手率 = 成交量(手) ÷ 自由流通股本(万股)
   //     ★ 单位推导: 量手×100 股 / (股本万股×10000 股) × 100% = 量 ÷ 股本 (不用再乘除任何常数)
   //     ★ 与后端 auction_scan.turnover_pct() 是同一条式子, 两边结果必须逐位一致
-  //   10:00 前显示昨日全天换手(9:27 选股用), 10:00 后显示当日实时(看有没有出货)
+  //   10:00 前显示昨日全天换手(9:25 竞价选股用), 10:00 后显示当日实时(看有没有出货)
   //   封板率(seal_rate)不随价变 —— 它是最近 500 根K线的历史比例, 盘中不动, 故意不重算。
   if(m==='auction'){
     var _fs=+(r.free_shares||0);
@@ -10449,7 +10449,7 @@ function renderTable(filter){
       var tvTip='换手 '+fmt(tv,2)+'% — 当前显示的是「'+tvTx+'」实际换手率 (成交量 ÷ 自由流通股本)'
         +'\n· 昨日全天: '+(r.turnover_y==null?'--':fmt(r.turnover_y,2)+'%')
         +'\n· 今日实时: '+(r.turnover_t==null?'--':fmt(r.turnover_t,2)+'%')
-        +'\n· 10:00 前默认显示昨日(方便 9:27 选股), 10:00 后默认显示当日(看有没有出货)'
+        +'\n· 10:00 前默认显示昨日(方便 9:25 竞价选股), 10:00 后默认显示当日(看有没有出货)'
         +(r.free_shares?('\n· 自由流通股本 '+fmt(r.free_shares,1)+' 万股'):'\n· ⚠ 该票 CSV 还没有第9列自由流通股本, 算不出换手');
       // 昨额列: 昨日全天成交额(亿元) — 硬条件⑩ 要求 >1 亿, <1 亿标红
       // v2.274: 表格不再显示这一列(位置换成「换手」), 但判定依据仍在, 这里保留变量备用
