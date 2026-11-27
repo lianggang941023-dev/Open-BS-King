@@ -20,6 +20,7 @@ import time
 
 from . import fuyao as _fq
 from . import fuyao_limit as _fl
+from . import lastgood as _lg
 
 LHB_LIST = '/api/a-share/special-data/dragon-tiger-list'
 LHB_INST = '/api/a-share/special-data/dragon-tiger-stock-institution'
@@ -28,6 +29,8 @@ DEPT_HISTORY = '/api/a-share/special-data/dragon-tiger-department-history'
 HOT_LIST = '/api/a-share/special-data/hot-stock-list'
 
 CACHE_TTL = {'lhb': 1800, 'hot': 60}
+# v2.399d: 这份榜实际是什么时候抓到的 —— {(board,date): {'ts': float, 'cached': bool}}
+_SRC = {}
 
 
 def log(level, api, detail):
@@ -79,6 +82,41 @@ def _def_lhb_date():
     return _prev_trading_day(today)
 
 
+def _lg_name(board):
+    '''龙虎榜 → lastgood 存档名（三个榜各一个固定文件）'''
+    return 'lhb_' + ('hm' if board == 'hot_money' else ('org' if board == 'org' else 'all'))
+
+
+def _lhb_stale(board, err=None):
+    '''v2.399 (用户 m08249): 拉不到新数据 → 用 lastgood 里的旧数据顶上。
+
+    返回的结构与正常 lhb_list 完全一致（前端不用改渲染），额外带三个标记:
+      stale=True / data_time=(存档时刻) / data_date=(存档里那份数据是哪天的行情)
+    '''
+    nm = _lg_name(board)
+    try:
+        o = _lg.load(nm)
+    except Exception:
+        o = {'ok': False}
+    if o.get('ok') and o.get('payload'):
+        p = dict(o['payload'])
+        p['ok'] = True
+        p['stale'] = True
+        p['data_time'] = (p.get('data_time') or o.get('saved_at') or '')
+        p['data_date'] = o.get('data_date') or ''
+        p['arch_time'] = o.get('saved_at') or ''
+        # v2.399e: 「多久之前」按数据本身时刻算, 不是按存档写入时刻
+        p['stale_sec'] = (_lg.age_of(p['data_time'])
+                          if _lg.age_of(p['data_time']) is not None else (o.get('age_sec') or 0))
+        if err:
+            p['stale_reason'] = str(err)[:200]
+        log('WARN', 'lhb_list', '本次拉取失败/为空(%s)，改用存档 %s (%d 只)'
+            % (str(err or '')[:60], p['data_time'] or '?', p.get('count') or 0))
+        return p
+    return {'ok': False, 'error': (str(err) if err else '没有可用的存档')[:200],
+            'stale': True, 'data_time': '', 'rows': [], 'hot_money': [], 'count': 0}
+
+
 def _lhb_raw(date, board='all'):
     # v2.212 (2026-10-24 DEBUG #1): 空日期不能走 _norm_date ——
     #   _norm_date(None)/_norm_date('') 会返回「今天」, 于是 `or _def_lhb_date()`
@@ -89,9 +127,16 @@ def _lhb_raw(date, board='all'):
     name = 'lhb_%s_%s' % (board, d.replace('-', ''))
     c = _fl._load_json(name, max_age=CACHE_TTL['lhb'])
     if c:
+        # v2.399d: 缓存文件的 mtime = 这份榜最后一次真正抓到的时刻
+        try:
+            _ts = os.path.getmtime(os.path.join(_fl.CACHE_DIR, name + '.json'))
+        except Exception:
+            _ts = time.time()
+        _SRC[(board, d)] = {'ts': _ts, 'cached': True}
         return c, d
     r = _fq._req(LHB_LIST, {'date': d, 'board_type': board}, timeout=30, api_name='dragon-tiger-list')
     _fl._save_json(name, r)
+    _SRC[(board, d)] = {'ts': time.time(), 'cached': False}
     return r, d
 
 
@@ -105,7 +150,7 @@ def lhb_list(date=None, board='all'):
         raw, d = _lhb_raw(date, board)
     except Exception as e:
         log('ERR', 'lhb_list', str(e))
-        return {'ok': False, 'error': str(e)[:200]}
+        return _lhb_stale(board, e)
     # 空榜兜底：数据还没挂出来时（比如今天刚开盘），自动退到上一个交易日
     if not (raw.get('stock_items') or raw.get('hot_money_items')):
         if date is None or str(date) == '':
@@ -160,8 +205,21 @@ def lhb_list(date=None, board='all'):
                     'count': len(rr), 'rows': rr})
     hot.sort(key=lambda y: -y['buying'])
 
-    return {'ok': True, 'date': d, 'board': board, 'count': len(rows),
-            'stock_count': int(_num(raw.get('stock_count'))), 'rows': rows, 'hot_money': hot}
+    _s = _SRC.get((board, d)) or {}
+    out = {'ok': True, 'date': d, 'board': board, 'count': len(rows),
+           'stock_count': int(_num(raw.get('stock_count'))), 'rows': rows, 'hot_money': hot,
+           'stale': False, 'cached': bool(_s.get('cached')),
+           'data_time': time.strftime('%Y-%m-%d %H:%M:%S',
+                                      time.localtime(_s.get('ts') or time.time())),
+           'data_date': d}
+    # v2.399 (用户 m08249): 拿到新数据就覆盖进单文件存档（空表不会覆盖, 见 lastgood.save）
+    if not rows and not hot:
+        return _lhb_stale(board, '本次榜单为空')
+    try:
+        _lg.save(_lg_name(board), out, d)
+    except Exception:
+        pass
+    return out
 
 
 def lhb_inst(code, date=None):

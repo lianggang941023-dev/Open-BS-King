@@ -6371,8 +6371,12 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                     except Exception:
                         pass
                     # v2.323: 三种榜单各存一份（all/org/hot_money），打开窗口先读它秒显
-                    _arc.save_window('lhb_' + ('hm' if _board == 'hot_money'
-                                               else 'org' if _board == 'org' else 'all'), _d)
+                    # v2.399: 空榜 / 用存档顶上的结果不覆盖窗口存档（否则一次故障就把好档抹成空）
+                    _lgok = bool(_d.get('ok')) and not _d.get('stale') and (
+                        (_d.get('count') or 0) > 0 or bool(_d.get('hot_money')))
+                    if _lgok:
+                        _arc.save_window('lhb_' + ('hm' if _board == 'hot_money'
+                                                   else 'org' if _board == 'org' else 'all'), _d)
                     self._json(_d)
                 except Exception as _e:
                     self._json({'ok': False, 'error': str(_e)[:200]})
@@ -6509,7 +6513,9 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                     _lf = (qs.get('force', '0') or '0').strip() in ('1', 'true', 'yes')
                     _ldd = _lad.ladder((qs.get('date', '') or '').strip(), _ld, force=_lf)
                     # v2.323: 涨停/跌停两张梯队各存一份, 打开窗口先读它秒显
-                    _arc.save_window('ladder_' + ('down' if _ld == 'down' else 'up'), _ldd)
+                    # v2.399: 一条都没拿到 / 用存档顶上的, 不覆盖窗口存档
+                    if (_ldd.get('total') or 0) > 0 and not _ldd.get('stale'):
+                        _arc.save_window('ladder_' + ('down' if _ld == 'down' else 'up'), _ldd)
                     self._json(_ldd)
                 except Exception as _e:
                     self._json({'ok': False, 'error': str(_e)[:200]})

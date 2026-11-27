@@ -18501,7 +18501,30 @@ function ldrSetMsg(t, c){
   var m = $('ldr-msg'); if (!m) return;
   m.textContent = t || '';
   m.style.color = (c === 'err') ? 'var(--red)' : (c === 'ok') ? 'var(--green)'
-                : (c === 'busy') ? 'var(--cyan)' : 'var(--tx3)';
+                : (c === 'busy') ? 'var(--cyan)' : (c === 'stale') ? 'var(--orange)'
+                : 'var(--tx3)';
+}
+/* v2.399 (用户 m08249): 「这份数据是什么时候的」—— 把秒数说成人话 */
+function ldrAgo(sec){
+  var n = Number(sec) || 0;
+  if (n < 60) return Math.round(n) + '秒';
+  if (n < 3600) return Math.round(n / 60) + '分钟';
+  if (n < 86400) return Math.round(n / 3600) + '小时';
+  return Math.round(n / 86400) + '天';
+}
+/* v2.399: 数据时间后缀。正常数据 → " · 数据 11-27 15:41";
+   用存档顶上的 → " · ⚠ 显示 11-27 22:39 的存档 (11-27 的行情, 3小时前)" */
+function ldrWhen(d){
+  if (!d) return '';
+  if (d.stale){
+    var wt = String(d.data_time || '').slice(5, 16);
+    var wd = String(d.data_date || '');
+    return ' · ⚠ 上游暂时不可用, 显示 ' + (wt || '?') + ' 的存档'
+         + (wd ? ' (' + wd + ' 的行情, ' + ldrAgo(d.stale_sec) + '前)' : '');
+  }
+  var dt = String(d.data_time || '');
+  /* v2.399e: 上游挂着、这份是本地磁盘缓存 —— 说清楚, 别让人以为是刚拉的 */
+  return dt ? (' · 数据 ' + dt.slice(5, 16) + (d.cached ? ' (本地缓存)' : '')) : '';
 }
 
 /* ── 加载 ─────────────────────────────────────────────────────────────── */
@@ -18531,7 +18554,8 @@ async function ldrLoad(force){
     ldrSetMsg('共 ' + (d.total || 0) + ' 只 · 涨停池 ' + ((d.counts || {}).up || 0)
               + ' · 炸板 ' + ((d.counts || {}).broken || 0)
               + ' · 断板 ' + ((d.counts || {}).failed || 0)
-              + ' · ' + (d.elapsed || 0) + 's', 'ok');
+              + ' · ' + (d.elapsed || 0) + 's' + ldrWhen(d),
+              d.stale ? 'stale' : 'ok');
     ldrRender();
     ldrPaintBtn();
   }).catch(function(e){
@@ -18950,7 +18974,25 @@ function lh2BindResize(){
   window.addEventListener('resize', function(){ if (LH2.open) lh2Layout(); });
 }
 
-function lh2Met(t){ var e = $('lh2-met'); if (e) e.textContent = t || ''; }
+function lh2Met(t, c){
+  var e = $('lh2-met'); if (!e) return;
+  e.textContent = t || '';
+  /* v2.399 (用户 m08249): 用旧存档顶上时标橙色, 正常数据保持原色 */
+  e.style.color = (c === 'stale') ? 'var(--orange)' : (c === 'err') ? 'var(--red)' : 'var(--tx2)';
+}
+/* v2.399: 龙虎榜的数据时间后缀(与连板梯队同一套文案) */
+function lh2When(d){
+  if (!d) return '';
+  if (d.stale){
+    var wt = String(d.data_time || '').slice(5, 16);
+    var wd = String(d.data_date || '');
+    return ' · ⚠ 上游暂时不可用, 显示 ' + (wt || '?') + ' 的存档'
+         + (wd ? ' (' + wd + ' 的行情, ' + ldrAgo(d.stale_sec) + '前)' : '');
+  }
+  var dt = String(d.data_time || '');
+  /* v2.399e: 上游挂着、这份是本地磁盘缓存 —— 说清楚, 别让人以为是刚拉的 */
+  return dt ? (' · 数据 ' + dt.slice(5, 16) + (d.cached ? ' (本地缓存)' : '')) : '';
+}
 
 /* ── 三块面板切换 ─────────────────────────────────────────────── */
 function lh2Panes(){
@@ -19139,7 +19181,9 @@ async function lh2Load(tab){
       return;
     }
     LH2.date = d.date || '';
-    lh2Met((d.date || '') + ' · ' + (d.count || 0) + ' 只上榜 · ' + ({all:'全部', org:'机构', hm:'游资'}[tab] || tab));
+    lh2Met((d.date || '') + ' · ' + (d.count || 0) + ' 只上榜 · '
+            + ({all:'全部', org:'机构', hm:'游资'}[tab] || tab) + lh2When(d),
+            d.stale ? 'stale' : '');
     lh2PaintBtn();
     lh2Paint(d, tab);
   }).catch(function(){ bd.innerHTML = '<div style="color:var(--red);font-size:18px;padding:6px">加载失败</div>'; });
@@ -19472,6 +19516,7 @@ window.lh2HistLoad = lh2HistLoad; window.lh2HistPick = lh2HistPick; window.lh2Hi
 
 
 window.ldrLhbTab = ldrLhbTab; window.ldrLhbLoad = ldrLhbLoad;
+window.ldrAgo = ldrAgo; window.ldrWhen = ldrWhen; window.lh2When = lh2When;
 window.ldrLhbPick = ldrLhbPick; window.ldrLhbInst = ldrLhbInst; window.ldrLhbDept = ldrLhbDept;
 
 </script>

@@ -46,6 +46,11 @@ MAX_PAGES = 8                                        # 最多 1600 条，够 A �
 _POOL_TTL = 60                                       # 盘中池子缓存秒数
 
 _MEM = {}                                            # 内存缓存 {key: (ts, value)}
+_PRUNE_LAST = [0.0]                                  # 上次清理按日缓存的时间(v2.399)
+# v2.399b: 每次返回的数据实际是什么时候的 —— {'ts': float, 'cached': bool}
+#   上游挂掉回落磁盘缓存时 ts = 缓存文件的 mtime(真实采集时刻), cached=True
+#   ⇒ 界面能显示「数据 15:41 (本地缓存)」而不是假装是刚刚拉的
+_SRC = {}
 
 
 # ---------------------------------------------------------------- 基础设施
@@ -99,6 +104,46 @@ def _save_json(name, obj):
         os.replace(tmp, p)
     except Exception as e:
         log('WARN', 'cache', '写 %s 失败: %s' % (name, e))
+
+
+def prune_cache(keep=40):
+    '''清理「按日期分文件」的旧缓存（v2.399, 用户 m08249 关心磁盘不会被撑大）。
+
+    只认文件名末尾是 8 位数字日期的：``pool_limit-up-pool_20261127`` / ``lhb_all_20261126``。
+    每个前缀只留最近 keep 个交易日，多的删掉。``lhbinst_<代码>_<日期>`` 前缀里带代码,
+    各自独立成组, 不会被误删。一小时最多跑一次，失败一律吞掉。
+    '''
+    now = time.time()
+    if now - _PRUNE_LAST[0] < 3600:
+        return 0
+    _PRUNE_LAST[0] = now
+    n = 0
+    try:
+        groups = {}
+        for fn in os.listdir(CACHE_DIR):
+            if not fn.endswith('.json'):
+                continue
+            base = fn[:-5]
+            i = base.rfind('_')
+            if i <= 0:
+                continue
+            d = base[i + 1:]
+            if len(d) != 8 or not d.isdigit():
+                continue
+            groups.setdefault(base[:i], []).append((d, fn))
+        for _pre, lst in groups.items():
+            lst.sort(reverse=True)
+            for _d, fn in lst[keep:]:
+                try:
+                    os.unlink(os.path.join(CACHE_DIR, fn))
+                    n += 1
+                except Exception:
+                    pass
+        if n:
+            log('INFO', 'cache', '清理旧缓存 %d 个 (每类保留最近 %d 日)' % (n, keep))
+    except Exception:
+        pass
+    return n
 
 
 def _day_ms(yyyymmdd=None):
@@ -211,6 +256,22 @@ def default_pool_date():
     return today
 
 
+def _file_ts(name):
+    '''缓存文件的 mtime = 这份数据最后一次真正抓到的时刻; 读不到就退回现在'''
+    try:
+        return os.path.getmtime(os.path.join(CACHE_DIR, name + '.json'))
+    except Exception:
+        return time.time()
+
+
+def last_src(api, date):
+    '''这份数据实际是什么时候拿到的 —— {'ts': float, 'cached': bool}（v2.399b）'''
+    try:
+        return dict(_SRC.get('%s:%s' % (api, _norm_date(date))) or {})
+    except Exception:
+        return {}
+
+
 def _pool(api, date=None, extra=None):
     """通用分页拉取 → (items, meta)。"""
     out, page, meta = [], 1, {}
@@ -245,8 +306,30 @@ def _cached_pool(api, date, builder):
     disk = _load_json(name, max_age=_POOL_TTL)
     if disk:
         _MEM[key] = (time.time(), disk)
+        _SRC[key] = {'ts': _file_ts(name), 'cached': True}
         return disk
-    val = builder()
+    # v2.399 (用户 m08249): 上游整块挂掉时 builder() 会抛异常(同花顺 code=5003 数据源不可用)。
+    #   以前这里直接向上抛 ⇒ 连板梯队整块空、界面显示「今日无连板数据」, 看着像"今天真没有"。
+    #   现在先按「返回空」那套逻辑回捞本交易日的磁盘旧缓存; 真的一条都没有才继续往上抛,
+    #   让调用方(ladder_scan)知道失败并去读 lastgood 单文件存档。
+    try:
+        val = builder()
+    except Exception as _e:
+        _api_name = api.rsplit('/', 1)[-1]
+        _stale = _MEM.get('stale:' + key)
+        if _stale and _stale[1]:
+            log('WARN', _api_name, '拉取失败(%s)，沿用上次非空 %d 条(内存)' % (str(_e)[:60], len(_stale[1])))
+            _SRC.setdefault(key, {'ts': time.time(), 'cached': True})
+            return _stale[1]
+        _old = _load_json(name, max_age=None)         # 不限年龄, 文件名已带日期不会串日
+        if _old:
+            _MEM[key] = (time.time(), _old)
+            _MEM['stale:' + key] = (time.time(), _old)
+            _SRC[key] = {'ts': _file_ts(name), 'cached': True}
+            log('WARN', _api_name, '拉取失败(%s)，沿用磁盘旧缓存 %d 条' % (str(_e)[:60], len(_old)))
+            return _old
+        log('WARN', _api_name, '拉取失败且无任何旧缓存: %s' % str(_e)[:120])
+        raise
     # 空结果不覆盖缓存：池子偶尔会返回空（接口抖动/限流），不能让一次抖动把好数据抹成空表。
     #   同一交易日里只要曾经拿到过非空，就一直沿用它，直到拿到新的非空。
     if not val:
@@ -259,11 +342,13 @@ def _cached_pool(api, date, builder):
         stale = _MEM.get('stale:' + key)
         if stale and stale[1]:
             log('WARN', api_name, '本次返回空，沿用上次非空 %d 条(内存)' % len(stale[1]))
+            _SRC.setdefault(key, {'ts': time.time(), 'cached': True})
             return stale[1]
         old = _load_json(name, max_age=None)          # 不限年龄, 只要是这个交易日就行
         if old:
             _MEM[key] = (time.time(), old)
             _MEM['stale:' + key] = (time.time(), old)
+            _SRC[key] = {'ts': _file_ts(name), 'cached': True}
             log('WARN', api_name, '本次返回空，沿用磁盘旧缓存 %d 条' % len(old))
             return old
         log('WARN', api_name, '本次返回空且无任何旧缓存可用(该交易日首次就失败)')
@@ -271,6 +356,7 @@ def _cached_pool(api, date, builder):
         return val
     _MEM[key] = (time.time(), val)
     _MEM['stale:' + key] = (time.time(), val)
+    _SRC[key] = {'ts': time.time(), 'cached': False}
     _save_json(name, val)
     return val
 
@@ -379,6 +465,10 @@ def _raw_limit_up(date=None):
     except Exception:
         pass
     rows.sort(key=lambda x: (-x['lianban'], -x['seal_money']))
+    try:
+        prune_cache()
+    except Exception:
+        pass
     return rows, meta
 
 

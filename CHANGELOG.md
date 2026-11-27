@@ -20,6 +20,74 @@
 ---
 
 ---
+## v2.399 — 2026-11-27
+
+### 连板梯队 / 龙虎榜 改成本地覆盖式单文件存档
+
+**背景**：同花顺 fuyao 上游的「涨跌停池 + 龙虎榜」这一组数据源（内部代号 `hotspot_focus`）
+从 2026-11-27 19:10:30 起整块故障，一直返回 `code=5003 数据源不可用`。
+同 Key 同时刻的行情快照、热榜、交易日历都正常 ⇒ 不是我们的代码 / Key / 网络 / 参数问题。
+但界面上直接变成「今日无连板数据」「龙虎榜不可用」，看着像"今天真没有"。
+
+**做法**（对应用户 m08249 的四条要求）：
+
+1. **每个数据集只有一个文件** —— 新增 `quant_terminal/lastgood.py`，
+   存档固定落在 `data_archive/lastgood/<name>.json`，**文件名里不带日期、原地覆盖**，
+   绝不按天累积。目前 5 个固定文件：
+   `ladder_up` / `ladder_down` / `lhb_all` / `lhb_org` / `lhb_hm`。
+2. **拿到新数据就覆盖**，且只有"更好的数据"才能覆盖：
+   - 空表不覆盖（`count`/`total` 为 0 直接跳过）
+   - 更旧的数据日不覆盖更新的（防上游回退到上一交易日把新数据盖成旧的）
+   - 内容哈希没变跳过（免得每 30 秒重写一次盘）
+3. **拉不到新数据就用旧数据** —— 两处兜底：
+   - `fuyao_limit._cached_pool()` 的 `builder()` 包 try/except，异常时回捞本交易日的磁盘缓存
+     （以前这里直接向上抛，一挂就整块空）
+   - `ladder_scan.ladder()` / `fuyao_lhb.lhb_list()` 一条都没拿到时，读 lastgood 存档顶上，
+     返回体标 `stale=true`，结构不变、前端不用改渲染
+4. **界面显示数据时间** —— `#ldr-msg` / `#lh2-met` 多两段：
+   - 正常：`· 数据 11-27 15:41`
+   - 用存档顶上：`· ⚠ 上游暂时不可用, 显示 11-27 15:23 的存档 (2026-11-26 的行情, 7小时前)`（橙色）
+
+**「数据时间」的口径**：取数据**实际采集时刻**，不是接口返回时刻。
+`fuyao_limit` 每次返回都会记下 `_SRC[api:date] = {ts, cached}`
+（磁盘缓存命中时 `ts` = 缓存文件 mtime），`ladder_scan` 只取**当日**那几路池子的最旧值。
+这样上游挂掉回落缓存时，界面显示的是"这份数据本来是什么时候抓的"，
+而不是假装成刚刚拉的实时数据。`fuyao_lhb` 同样处理（`cached` 为真时界面补一句「(本地缓存)」）。
+
+**顺手清理磁盘**：`fuyao_limit.prune_cache(keep=40)` —— 按日期分文件的那批缓存
+（`pool_*_YYYYMMDD.json` / `lhb_*_YYYYMMDD.json`）每类只保留最近 40 个交易日，
+一小时最多跑一次，在 `limit_up_pool()` 末尾顺手触发。
+实测：159 个文件时按 keep=8 试跑删掉 81 个、按生产默认 keep=40 一个都不删（最大分组 29 个）。
+
+### 空结果不再覆盖窗口存档
+
+`server.py` 的 `/api/ladder` 与 `/api/lhb` 往 `data_archive/window/` 写「打开窗口先秒显」的存档时，
+加了闸：**总数为 0 或者是用旧存档顶上的结果，一律不写**。
+以前一次上游故障就会把好好的 `ladder_up.json` 覆盖成 `total=0` 的空档，前端秒显也就跟着空了。
+
+### 实测（同花顺仍在 5003 的状态下）
+
+| 接口 | 结果 |
+|---|---|
+| `/api/ladder?direction=up` | 499 只（涨停 422 / 炸板 41 / 断板 36），`data_time=11-27 15:41`、`cached=true` |
+| `/api/ladder?direction=down` | 7 只，`stale=true`、`data_date=2026-11-26` |
+| `/api/lhb?board=all` | 73 只，`stale=true`、`data_time=11-27 15:23` |
+| `/api/lhb?board=org` | 42 只 |
+| `/api/lhb?board=hot_money` | 20 个游资分组 |
+
+`data_archive/lastgood/` 连跑多次仍是 **5 个文件 / 约 245 KB**，确认不会无限变多。
+
+### 改动文件
+
+- 新增 `quant_terminal/lastgood.py`
+- `quant_terminal/fuyao_limit.py`（异常兜底 + `prune_cache` + `last_src`）
+- `quant_terminal/fuyao_lhb.py`（`_lhb_stale` 存档兜底 + `_SRC` 采集时刻）
+- `quant_terminal/ladder_scan.py`（存档兜底 + `data_time` 取真实采集时刻）
+- `quant_terminal/server.py`（空结果不覆盖窗口存档）
+- `quant_terminal/terminal.html`（`ldrWhen` / `lh2When` / `ldrAgo` / `ldrSetMsg` 橙色档 / `lh2Met` 着色）
+
+---
+
 ## v2.398 — 2026-11-27
 
 ### 去掉竞价打板「现价 > 20 元」的 ⚠ 警示（用户 m08007）

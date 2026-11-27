@@ -29,6 +29,7 @@ from quant_terminal import fuyao_limit as _fl          # noqa: E402
 from quant_terminal import engine as _eng             # noqa: E402
 from quant_terminal import mcap as _mcap              # noqa: E402
 from quant_terminal import board_rank as _brd         # noqa: E402
+from quant_terminal import lastgood as _lg            # noqa: E402
 
 _TTL = 300.0
 _CACHE = {}
@@ -202,7 +203,8 @@ def ladder(date='', direction='up', force=False):
     now = time.time()
     with _LOCK:
         c = _CACHE.get(key)
-        if c and not force and (now - c['ts']) < _TTL:
+        # v2.399: 用存档顶上的结果只缓存 60 秒 —— 上游一恢复就该立刻换回真数据
+        if c and not force and (now - c['ts']) < (60.0 if c.get('stale') else _TTL):
             return c['data']
 
     t0 = time.time()
@@ -225,6 +227,7 @@ def ladder(date='', direction='up', force=False):
 
     counts = {'up': 0, 'down': 0, 'broken': 0, 'failed': 0}
 
+    _srcs = []          # v2.399b: 各路数据的真实采集时刻
     if direction == 'up':
         up, e1 = _pull(_fl.limit_up_pool, date)
         if e1:
@@ -236,6 +239,11 @@ def ladder(date='', direction='up', force=False):
         yup, e3 = _pull(_fl.limit_up_pool, prev) if prev else ([], '')
         if e3:
             errors.append('yup: %s' % e3)
+        for _api, _d in ((_fl.POOL_UP, date), (_fl.POOL_BREAK, date), (_fl.POOL_UP, prev)):
+            if _d:
+                _s = _fl.last_src(_api, _d)
+                if _s:
+                    _srcs.append((_d, _s))
 
         yboards = {str(r.get('code')): int(r.get('lianban') or 1) for r in yup}
         today_codes = set()
@@ -274,6 +282,9 @@ def ladder(date='', direction='up', force=False):
         dn, e1 = _pull(_fl.limit_down_pool, date)
         if e1:
             errors.append('down: %s' % e1)
+        _s = _fl.last_src(_fl.POOL_DOWN, date)
+        if _s:
+            _srcs.append((date, _s))
         for r in dn:
             code = str(r.get('code') or '')
             b = _down_boards(code, r.get('name') or '')
@@ -305,6 +316,9 @@ def ladder(date='', direction='up', force=False):
     touch = counts['up'] + counts['broken']
     seal_rate = round(seal_n / touch * 100.0, 1) if touch else 0.0
 
+    # v2.399c: 「数据时间」以**当日**那几路池子为准(昨日池只用于断板判定, 不算新鲜度)
+    _all = [x for _d, x in _srcs]
+    _cur = [x for _d, x in _srcs if _d == date]
     data = {
         'ok': True,
         'date': date,
@@ -323,7 +337,46 @@ def ladder(date='', direction='up', force=False):
         'errors': errors,
         'elapsed': round(time.time() - t0, 2),
         'ts': time.strftime('%H:%M:%S'),
+        # v2.399b: 界面要看到「这份数据是什么时候的」—— 上游挂掉回落本地缓存时,
+        #   这里必须是缓存文件的真实采集时刻, 不能写成"现在"(否则看着像刚拉的实时数据)。
+        'stale': False,
+        'cached': bool(_cur) and all(x.get('cached') for x in _cur),
+        'data_time': time.strftime(
+            '%Y-%m-%d %H:%M:%S',
+            time.localtime(max([x.get('ts') or 0 for x in (_cur or _all)] or [0]) or time.time())),
+        'data_date': date,
     }
+    # v2.399: 拿到数据就覆盖进单文件存档；一条都没拿到就反过来用存档顶上
+    lg_name = 'ladder_' + ('down' if direction == 'down' else 'up')
+    if len(allst) > 0:
+        try:
+            _lg.save(lg_name, data, date)
+        except Exception:
+            pass
+    else:
+        try:
+            _o = _lg.load(lg_name)
+        except Exception:
+            _o = {'ok': False}
+        if _o.get('ok') and _o.get('payload'):
+            _sp = dict(_o['payload'])
+            _sp['stale'] = True
+            # 数据本身的时刻优先用存档 payload 里记的那个(更准), 没有再退回存档写入时刻
+            _sp['data_time'] = (_o['payload'].get('data_time')
+                                or _o.get('saved_at') or '')
+            _sp['data_date'] = _o.get('data_date') or ''
+            _sp['arch_time'] = _o.get('saved_at') or ''
+            # v2.399e: 「多久之前」按数据本身时刻算
+            _a = _lg.age_of(_sp['data_time'])
+            _sp['stale_sec'] = _a if _a is not None else (_o.get('age_sec') or 0)
+            _sp['errors'] = list(errors) + [
+                '本次拉取失败, 显示的是 %s 的存档' % (_o.get('saved_at') or '?')]
+            _sp['elapsed'] = round(time.time() - t0, 2)
+            _sp['ts'] = time.strftime('%H:%M:%S')
+            _sp['ok'] = True
+            with _LOCK:
+                _CACHE[key] = {'ts': now, 'data': _sp, 'stale': True}
+            return _sp
     with _LOCK:
         _CACHE[key] = {'ts': now, 'data': data}
     return data
