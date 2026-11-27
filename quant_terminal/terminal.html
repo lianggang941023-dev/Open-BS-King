@@ -18013,7 +18013,7 @@ function MKT_TREND(d){
          + '<span style="font-size:11px;line-height:1;color:var(--tx3)">/</span>'
          + '<span style="' + num + '">' + nB + '</span><span style="' + ch + '">' + cB + '</span>';
   }
-  function cell(t1, v1, s1){
+  function cell(t1, v1, s1, tip){
     /* v2.287: height:100% + 纵向居中 —— 让格子填满 grid 分到的高度，而不是缩在角落 */
     /* v2.306 (2026-11-14 用户 m17208): 副行(s1)改成**绝对定位贴右下角**, 不再占流式高度。
        根因: 本卡 h=6 行(222px), 拆上下两个 grid 后每格只有 ~40px;
@@ -18021,7 +18021,8 @@ function MKT_TREND(d){
              被 overflow:hidden 从底部切掉 —— 于是「高换手 1497」下面那行「≥5%」看不见。
        改成绝对定位后内容只需 35px, 主值自然能完整显示(用户原话: 「高换手1497就可以往下移动完整显示了」)。 */
     return '<div style="position:relative;height:100%;box-sizing:border-box;display:flex;flex-direction:column;justify-content:center;gap:2px;'
-      + 'background:var(--c-hov-2);border:1px solid var(--bd);border-radius:6px;padding:4px 6px;min-width:0;overflow:hidden">'
+      + 'background:var(--c-hov-2);border:1px solid var(--bd);border-radius:6px;padding:4px 6px;min-width:0;overflow:hidden"'
+      + (tip ? ' title="'+mEsc(tip)+'"' : '') + '>'
       + '<div style="font-size:10px;color:var(--tx2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.1">'+mEsc(t1)+'</div>'
       + '<div style="font-family:ui-monospace,Consolas,monospace;font-size:15px;font-weight:600;color:var(--tx0);line-height:1.15">'+v1+'</div>'
       + (s1?'<div style="position:absolute;right:5px;bottom:3px;font-size:9px;line-height:1;color:var(--tx3);pointer-events:none;white-space:nowrap">'+mEsc(s1)+'</div>':'')+'</div>';
@@ -18042,7 +18043,12 @@ function MKT_TREND(d){
     + '<div style="flex:1;min-height:0;display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:1fr;gap:5px">'
     + cell('炸板', '<span style="color:var(--gold)">'+(l.broken||0)+'</span>', '')
     + cell('跌停', '<span style="color:var(--dn)">'+(l.limit_down||0)+'</span>', '')
-    + cell('新高/新低', hi+'/'+lo, '')
+    /* v2.402 (2026-11-28 用户 m09041): 这一格的口径由用户指定 ——
+       分子=新高(最高价口径, 今日 high >= 前60根最高价), 分母=新低(收盘价口径, 今日 close <= 前60根最低价)。
+       与上面「38收/69高」「8收/586低」里的 69 和 8 一一对应。
+       注意: 这是两把尺子混用, 所以它不等于「高低比」(高低比按用户 m08806 的定案仍用 收盘价/收盘价)。 */
+    + cell('新高/新低', (hasC ? (hi+'/'+loC) : (hi+'/'+lo)), '',
+           hasC ? ('新高=最高价口径 '+hi+' 只 (今日最高价 ≥ 前60根最高价)\n新低=收盘价口径 '+loC+' 只 (今日收盘价 ≤ 前60根最低价)') : '')
     + cell('高换手', ac.high_turnover||0, '≥5%')
     + cell('放量占比', mNum(ac.high_vol_ratio,1)+'%', '量比≥1.5')
     + cell('均量比', mNum(ac.vol_ratio,2), '') + '</div>';
