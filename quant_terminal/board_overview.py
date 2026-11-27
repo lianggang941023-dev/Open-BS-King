@@ -204,9 +204,15 @@ def _facts_one(fn):
         ma5 = _avg(cl[-5:]) if len(cl) >= 5 else 0.0
         ma20 = _avg(cl[-20:]) if len(cl) >= 20 else 0.0
         ma60 = _avg(cl[-60:]) if len(cl) >= 60 else 0.0
-        # 60 日新高/新低 —— 两种口径都算 (v2.400, 用户 m08806)
-        #   ① 最高/最低价口径 (原有): 今日 high >= 前 60 根最高 / 今日 low <= 前 60 根最低
-        #   ② 收盘价口径 (与 TSP 一致): 今日 close >= 前 60 根最高收盘 / close <= 前 60 根最低收盘
+        # 60 日新高/新低 —— 两把「尺子」都用同一个锚点 (v2.401, 用户 m08995)
+        #   锚点(前 60 根, 不含今天):
+        #     新高 —— 前 60 根里最高的那根 **最高价** ph
+        #     新低 —— 前 60 根里最低的那根 **最低价** pl
+        #   两种口径只差「今天拿什么去比」:
+        #     ① 高/低口径: 今日 high >= ph / 今日 low  <= pl
+        #     ② 收/收口径: 今日 close >= ph / 今日 close <= pl   (今收 <= 今高 ⇒ ② 必是 ① 的子集)
+        #   v2.400 曾用「前 60 根最高/最低收盘价」当锚点, 出现「收」比「高」还多(73>69)的
+        #   反直觉现象 (前60最高收盘通常比最高价低约 2%)。v2.401 按用户要求统一锚点。
         prev = parsed[:-1]
         hi_new = lo_new = False
         hi_cls = lo_cls = False
@@ -217,11 +223,9 @@ def _facts_one(fn):
                 hi_new = True
             if pl > 0 and low <= pl:
                 lo_new = True
-            ch = max(r[2] for r in prev[-60:])
-            cl_ = min(r[2] for r in prev[-60:])
-            if ch > 0 and close >= ch:
+            if ph > 0 and close >= ph:
                 hi_cls = True
-            if cl_ > 0 and close <= cl_:
+            if pl > 0 and close <= pl:
                 lo_cls = True
         # 今日涨幅 (CSV 自己算, 快照缺失时兜底)
         pct_csv = 0.0
@@ -636,7 +640,7 @@ def _build():
             'above_ma20_pct': round(a20 / float(n20) * 100.0, 1) if n20 else 0.0,
             'above_ma60_pct': round(a60 / float(n60) * 100.0, 1) if n60 else 0.0,
             'new_high': hi_new, 'new_low': lo_new,
-            'new_high_close': hi_cls, 'new_low_close': lo_cls,   # v2.400 收盘价口径
+            'new_high_close': hi_cls, 'new_low_close': lo_cls,   # v2.401 收盘价口径(同一锚点)
         },
         'activity': {
             'avg_turnover': round(avg_turn, 1) if turns else 0.0,
