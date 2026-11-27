@@ -20,6 +20,85 @@
 ---
 
 ---
+## v2.405 — 2026-11-28
+
+### 修「拉到空数据」被当成「拉不到数据」（用户 m10129）
+
+#### 一、问题
+
+同花顺的**跌停池**在 2026-11-27 返回了正常的 HTTP 200，`pagination.total = 0` ——
+那天全市场 5,382 只上涨、181 只下跌、涨跌幅中位数 **+6.91%**，是极端普涨日，
+真实跌停只有 1 只（001219 青岛食品，收盘 17.39 正好压在跌停价 17.3880）。
+上游给 0 条是「**今天确实没有**」，不是「接口坏了」。
+
+但代码把这两种情况混成了一件：
+
+1. `fuyao_limit._cached_pool()` 里 `if not val:` 只会往「回捞旧缓存」走，
+   从来没记录过「这次是真的拉到 0 条，还是拉取本身就失败了」；
+2. `ladder_scan.ladder()` 拿到空列表 ⇒ `allst` 为空 ⇒ 走 `else` 分支去读 lastgood 存档，
+   并写死一句 `errors = ['本次拉取失败, 显示的是 … 的存档']`；
+3. 前端 `ldrWhen()` 只看 `d.stale` 就输出橙字「⚠ 上游暂时不可用」。
+
+结果：界面显示的是 11-26 那 7 只跌停 + 橙色警告，看着像接口故障，
+其实当天**根本没有跌停**。这正是用户指出的缺陷。
+
+#### 二、改法（三层都改，但不改任何函数的返回形状）
+
+**`quant_terminal/fuyao_limit.py`**
+
+- 新增模块级 `_FETCH`（最近一次真实拉取的结果）和 `_POOL_TOTAL`（上游 `pagination.total` 原值）
+- `_pool()` 开头清空本次 `total`、每页拿到后写入 —— 拉取抛异常时不会误用上一次的 total
+- `_cached_pool()` 三条出口都记账：
+  - `except` 分支：`{'ok': False, 'confirmed_empty': False, …}`
+  - 空结果分支：先算 `confirmed = (total is not None and int(total) == 0)`；
+    **确认 0 条时直接返回空列表**（不再回捞旧缓存、不写「返回空」日志），
+    并记 `confirmed_empty = True`
+  - 正常分支：`{'ok': True, 'confirmed_empty': False, …}`
+- 新增 `last_fetch(api, date)` 给调用方查询
+- `limit_down_pool()` 把 `date` 提前定死：`build()` 里的 `_pool` 和 `_cached_pool` 的 key
+  必须用同一个日期，否则 `date=None` 时前者查「今天」、后者 key 是「上一交易日」，total 对不上
+
+**`quant_terminal/ladder_scan.py`**
+
+- 新增 `_empty_ok`：从 `fuyao_limit.last_fetch()` 读 `confirmed_empty`
+- 返回体加 `empty_confirmed` 字段（默认 `False`）
+- 存档覆盖逻辑从 `if 有数据 / else 读存档` 改成三分支：
+  `if 有数据 → 覆盖存档` ／ `elif confirmed_empty and not errors → 如实返回 0 条，不读存档、不标 stale`
+  ／ `else → 拉取失败，回落存档 + stale=True`
+- stale 分支显式写 `empty_confirmed = False`（存档 payload 里可能残留 `True`）
+
+**`quant_terminal/terminal.html`**
+
+- `ldrWhen()` 新增分支：`d.empty_confirmed` ⇒ `" · 11-28 05:01 已确认 0 条"`（灰色，不是橙色警告）
+- `ldrLoad()` 成功分支：确认 0 条时显示 `"共 0 只 · 今日确认没有跌停 · 0.2s · … 已确认 0 条"`，颜色用默认灰
+- `ldrRender()` 空表格文案：确认 0 条时 `"今日确认没有连跌 —— 上游已正常返回 0 条"`（`--tx2`），
+  否则仍是 `"今日无连跌数据"`（`--tx3`）
+
+#### 三、三种状态怎么区分
+
+| 上游实际情况 | `last_fetch()` | `ladder()` 返回 | 界面 |
+|---|---|---|---|
+| 正常响应、明确 0 条 | `ok=True, confirmed_empty=True, total=0` | `total=0, empty_confirmed=True, stale=False, errors=[]` | 「共 0 只 · 今日确认没有跌停 · 已确认 0 条」灰字 |
+| 正常响应、有 N 条 | `ok=True, confirmed_empty=False, total=N` | 正常数据 | 「共 N 只 · …」绿字 |
+| 异常（5003 / 超时 / 无数据） | `ok=False, err='…'` | 回落 lastgood，`stale=True`，`errors` 带出原因 | 橙字「⚠ 上游暂时不可用, 显示 … 的存档」 |
+| 返回空但 total≠0（抖动） | `ok=True, confirmed_empty=False, total=41` | 照旧回捞旧缓存 | 不变 |
+
+#### 四、实测
+
+- 单元测试 9 组 20 项断言全过（`_t405.py`）：确认 0 条 / 抖动 total=41 / 抛异常无缓存 /
+  抛异常有旧缓存 / 正常 N 条 / `limit_down_pool(None)` 日期一致 / ladder 三分支 / 涨停方向不受影响
+- 真实接口：`GET /api/ladder?direction=down` →
+  `{"ok":true,"total":0,"stale":false,"empty_confirmed":true,"errors":[]}`（11-27 确认无跌停）
+- 涨停方向不受影响：`total=500, counts={up:423,broken:41,failed:36}`
+- 模拟上游全挂（monkeypatch `_fq._req` 抛 5003）→ 正确回落 11-26 的 7 只存档，
+  `stale=True, empty_confirmed=False, errors=['…code=5003…','本次拉取失败, 显示的是 … 的存档']`
+- 浏览器实测：跌停方向 `#ldr-msg` = `共 0 只 · 今日确认没有跌停 · 0.19s · 11-28 05:02 已确认 0 条`，
+  颜色 `rgb(139,149,163)`（灰）而非橙；表格区 `今日确认没有连跌 —— 上游已正常返回 0 条`
+
+#### 五、改动文件
+
+`quant_terminal/fuyao_limit.py`、`quant_terminal/ladder_scan.py`、`quant_terminal/terminal.html`
+
 ## v2.404 — 2026-11-28
 
 ### 修「窗口版K线切股票串档」+ 照 TSP 重做窗口比例 / 分时渐变 / 信息区字号

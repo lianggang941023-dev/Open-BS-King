@@ -228,10 +228,13 @@ def ladder(date='', direction='up', force=False):
     counts = {'up': 0, 'down': 0, 'broken': 0, 'failed': 0}
 
     _srcs = []          # v2.399: 各路数据的真实采集时刻
+    # v2.405 (用户 m10129): 上游明确确认「该交易日 0 条」⇒ 这是真没有, 不是没拉到
+    _empty_ok = False
     if direction == 'up':
         up, e1 = _pull(_fl.limit_up_pool, date)
         if e1:
             errors.append('up: %s' % e1)
+        _empty_ok = bool(_fl.last_fetch(_fl.POOL_UP, date).get('confirmed_empty'))
         br, e2 = _pull(_fl.limit_break_pool, date)
         if e2:
             errors.append('break: %s' % e2)
@@ -282,6 +285,7 @@ def ladder(date='', direction='up', force=False):
         dn, e1 = _pull(_fl.limit_down_pool, date)
         if e1:
             errors.append('down: %s' % e1)
+        _empty_ok = bool(_fl.last_fetch(_fl.POOL_DOWN, date).get('confirmed_empty'))
         _s = _fl.last_src(_fl.POOL_DOWN, date)
         if _s:
             _srcs.append((date, _s))
@@ -340,6 +344,7 @@ def ladder(date='', direction='up', force=False):
         # v2.399: 界面要看到「这份数据是什么时候的」—— 上游挂掉回落本地缓存时,
         #   这里必须是缓存文件的真实采集时刻, 不能写成"现在"(否则看着像刚拉的实时数据)。
         'stale': False,
+        'empty_confirmed': False,
         'cached': bool(_cur) and all(x.get('cached') for x in _cur),
         'data_time': time.strftime(
             '%Y-%m-%d %H:%M:%S',
@@ -353,6 +358,14 @@ def ladder(date='', direction='up', force=False):
             _lg.save(lg_name, data, date)
         except Exception:
             pass
+    elif _empty_ok and not errors:
+        # v2.405 (用户 m10129): 上游确认该交易日 0 条 —— 不拿旧存档顶上, 也不标 stale,
+        #   界面如实显示「今日 0 只」。这跟「拉取失败、只能显示存档」是两回事。
+        data['empty_confirmed'] = True
+        data['stale'] = False
+        with _LOCK:
+            _CACHE[key] = {'ts': now, 'data': data}
+        return data
     else:
         try:
             _o = _lg.load(lg_name)
@@ -361,6 +374,7 @@ def ladder(date='', direction='up', force=False):
         if _o.get('ok') and _o.get('payload'):
             _sp = dict(_o['payload'])
             _sp['stale'] = True
+            _sp['empty_confirmed'] = False     # v2.405: 这是"拉取失败用存档", 不是"确认 0 条"
             # 数据本身的时刻优先用存档 payload 里记的那个(更准), 没有再退回存档写入时刻
             _sp['data_time'] = (_o['payload'].get('data_time')
                                 or _o.get('saved_at') or '')

@@ -18811,6 +18811,11 @@ function ldrWhen(d){
     return ' · ⚠ 上游暂时不可用, 显示 ' + (wt || '?') + ' 的存档'
          + (wd ? ' (' + wd + ' 的行情, ' + ldrAgo(d.stale_sec) + '前)' : '');
   }
+  /* v2.405 (用户 m10129): 拉取成功、上游明确说 0 条 —— 不是故障, 别用橙色警告 */
+  if (d.empty_confirmed){
+    var _et = String(d.data_time || '');
+    return _et ? (' · ' + _et.slice(5, 16) + ' 已确认 0 条') : ' · 已确认 0 条';
+  }
   var dt = String(d.data_time || '');
   /* v2.399: 上游挂着、这份是本地磁盘缓存 —— 说清楚, 别让人以为是刚拉的 */
   return dt ? (' · 数据 ' + dt.slice(5, 16) + (d.cached ? ' (本地缓存)' : '')) : '';
@@ -18840,11 +18845,13 @@ async function ldrLoad(force){
       return;
     }
     LDR.data = d;
-    ldrSetMsg('共 ' + (d.total || 0) + ' 只 · 涨停池 ' + ((d.counts || {}).up || 0)
-              + ' · 炸板 ' + ((d.counts || {}).broken || 0)
-              + ' · 断板 ' + ((d.counts || {}).failed || 0)
-              + ' · ' + (d.elapsed || 0) + 's' + ldrWhen(d),
-              d.stale ? 'stale' : 'ok');
+    var _lm = d.empty_confirmed
+      ? ('共 0 只 · 今日确认没有' + (LDR.direction === 'down' ? '跌停' : '涨停'))
+      : ('共 ' + (d.total || 0) + ' 只 · 涨停池 ' + ((d.counts || {}).up || 0)
+         + ' · 炸板 ' + ((d.counts || {}).broken || 0)
+         + ' · 断板 ' + ((d.counts || {}).failed || 0));
+    ldrSetMsg(_lm + ' · ' + (d.elapsed || 0) + 's' + ldrWhen(d),
+              d.stale ? 'stale' : (d.empty_confirmed ? '' : 'ok'));
     ldrRender();
     ldrPaintBtn();
   }).catch(function(e){
@@ -18885,8 +18892,13 @@ function ldrRender(){
   var tiers = d.tiers || [];
   if (!tiers.length) {
     top.innerHTML = '';
-    body.innerHTML = '<div style="color:var(--tx3);font-size:10px;padding:20px;text-align:center">'
-                   + (LDR.direction === 'up' ? '今日无连板数据' : '今日无连跌数据') + '</div>';
+    /* v2.405 (用户 m10129): 「上游确认 0 条」和「没拉到数据」要分清楚 */
+    var _et = d.empty_confirmed
+      ? ('今日确认没有' + (LDR.direction === 'up' ? '连板' : '连跌') + ' —— 上游已正常返回 0 条')
+      : ('今日无' + (LDR.direction === 'up' ? '连板' : '连跌') + '数据');
+    body.innerHTML = '<div style="color:' + (d.empty_confirmed ? 'var(--tx2)' : 'var(--tx3)')
+                   + ';font-size:10px;padding:20px;text-align:center">'
+                   + _et + '</div>';
     return;
   }
   top.innerHTML = ldrOverviewHtml(tiers, d) + ldrTagsHtml(d.tags || {}, tiers);

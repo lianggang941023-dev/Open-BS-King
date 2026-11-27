@@ -51,6 +51,11 @@ _PRUNE_LAST = [0.0]                                  # 上次清理按日缓存�
 #   上游挂掉回落磁盘缓存时 ts = 缓存文件的 mtime(真实采集时刻), cached=True
 #   ⇒ 界面能显示「数据 15:41 (本地缓存)」而不是假装是刚刚拉的
 _SRC = {}
+# v2.405 (用户 m10129): 区分「拉不到数据」和「拉到了、确实 0 条」。
+#   _FETCH     : 最近一次真实拉取的结果 {api:date -> {ok, confirmed_empty, total, err, ts, cached}}
+#   _POOL_TOTAL: 上游 pagination.total 的原始值 {api:date -> int|None}
+_FETCH = {}
+_POOL_TOTAL = {}
 
 
 # ---------------------------------------------------------------- 基础设施
@@ -272,9 +277,24 @@ def last_src(api, date):
         return {}
 
 
+def last_fetch(api, date):
+    '''最近一次「实际去拉」的结果（v2.405, 用户 m10129）。
+
+    ok=True 且 confirmed_empty=True ⇒ 上游正常响应、明确说这个交易日 0 条（真没有, 不是故障）
+    ok=False                        ⇒ 拉取失败（异常/上游报错）, 现在返回的可能是旧缓存
+    total                           ⇒ 上游 pagination.total（判断到底是 0 还是没给数）
+    '''
+    try:
+        return dict(_FETCH.get('%s:%s' % (api, _norm_date(date))) or {})
+    except Exception:
+        return {}
+
+
 def _pool(api, date=None, extra=None):
     """通用分页拉取 → (items, meta)。"""
     out, page, meta = [], 1, {}
+    _k = '%s:%s' % (api, _norm_date(date))
+    _POOL_TOTAL[_k] = None            # v2.405: 先清掉上一次的值, 拉取失败时不会误用旧 total
     dm = _day_ms(date)
     while page <= MAX_PAGES:
         params = {'date_ms': dm, 'page': page, 'size': PAGE_SIZE}
@@ -287,6 +307,7 @@ def _pool(api, date=None, extra=None):
             meta = {'total': pg.get('total'), 'pages': pg.get('pages'),
                     'timestamp': (r or {}).get('timestamp')}
         out.extend(items)
+        _POOL_TOTAL[_k] = meta.get('total')     # v2.405
         if not pg.get('pages') or page >= int(pg.get('pages') or 1):
             break
         if len(items) < PAGE_SIZE:
@@ -316,6 +337,8 @@ def _cached_pool(api, date, builder):
         val = builder()
     except Exception as _e:
         _api_name = api.rsplit('/', 1)[-1]
+        _FETCH[key] = {'ok': False, 'confirmed_empty': False, 'total': None,
+                       'err': str(_e)[:200], 'ts': time.time(), 'cached': True}
         _stale = _MEM.get('stale:' + key)
         if _stale and _stale[1]:
             log('WARN', _api_name, '拉取失败(%s)，沿用上次非空 %d 条(内存)' % (str(_e)[:60], len(_stale[1])))
@@ -332,7 +355,28 @@ def _cached_pool(api, date, builder):
         raise
     # 空结果不覆盖缓存：池子偶尔会返回空（接口抖动/限流），不能让一次抖动把好数据抹成空表。
     #   同一交易日里只要曾经拿到过非空，就一直沿用它，直到拿到新的非空。
-    if not val:
+    #
+    # v2.405 (用户 m10129): 「拉不到数据」和「拉到了、确实 0 条」是两件事, 不能混为一谈。
+    #   上游正常返回 total=0（例如全市场几乎没有跌停的普涨日）时必须如实显示 0,
+    #   而不是当成拉取失败去顶上旧存档 —— 那样界面会显示昨天的 7 只跌停 +
+    #   橙字「上游暂时不可用」, 看着像接口坏了, 其实今天真没有。
+    _items = val[0] if (isinstance(val, tuple) and val) else (val or [])
+    _total = _POOL_TOTAL.get(key)
+    _empty = (len(_items) == 0)
+    _confirmed = False
+    if _empty:
+        try:
+            _confirmed = (_total is not None) and (int(_total) == 0)
+        except Exception:
+            _confirmed = False
+    _FETCH[key] = {'ok': True, 'confirmed_empty': bool(_confirmed), 'total': _total,
+                   'err': '', 'ts': time.time(), 'cached': False}
+    if _confirmed:
+        log('INFO', api.rsplit('/', 1)[-1], '上游确认该交易日 0 条 (total=0)')
+        _MEM[key] = (time.time(), val)
+        _SRC[key] = {'ts': time.time(), 'cached': False}
+        return val
+    if _empty:
         # v2.285 (2026-11-12): 兜底原来只查 _MEM['stale:'+key], 服务重启后内存是空的,
         #   一次接口抖动就会让整个交易日显示 0 条, 而且是静默的
         #   (板面表现为「炸板 0 / 封板率 100%」, 看着像数据对, 其实整块错)。
@@ -354,6 +398,8 @@ def _cached_pool(api, date, builder):
         log('WARN', api_name, '本次返回空且无任何旧缓存可用(该交易日首次就失败)')
         _MEM[key] = (time.time(), val)
         return val
+    _FETCH[key] = {'ok': True, 'confirmed_empty': False, 'total': _total,
+                   'err': '', 'ts': time.time(), 'cached': False}
     _MEM[key] = (time.time(), val)
     _MEM['stale:' + key] = (time.time(), val)
     _SRC[key] = {'ts': time.time(), 'cached': False}
@@ -503,6 +549,9 @@ def limit_up_pool(date=None):
 
 def limit_down_pool(date=None):
     """跌停池。"""
+    # v2.405: 先把日期定死 —— build 里 _pool 用的日期必须和 _cached_pool 的 key 是同一个,
+    #   否则 date=None 时 _pool 查「今天」而缓存 key 是「上一交易日」, total 对不上。
+    date = date or default_pool_date()
     def build():
         items, _meta = _pool(POOL_DOWN, date)
         out = []
@@ -517,7 +566,7 @@ def limit_down_pool(date=None):
                         'last_time': str(it.get('last_limit_down_time') or ''),
                         'board': _to_board(code)})
         return out
-    return _cached_pool(POOL_DOWN, date or default_pool_date(), build)
+    return _cached_pool(POOL_DOWN, date, build)
 
 
 def limit_break_pool(date=None):
