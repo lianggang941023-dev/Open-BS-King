@@ -18523,7 +18523,7 @@ function ldrWhen(d){
          + (wd ? ' (' + wd + ' 的行情, ' + ldrAgo(d.stale_sec) + '前)' : '');
   }
   var dt = String(d.data_time || '');
-  /* v2.399e: 上游挂着、这份是本地磁盘缓存 —— 说清楚, 别让人以为是刚拉的 */
+  /* v2.399: 上游挂着、这份是本地磁盘缓存 —— 说清楚, 别让人以为是刚拉的 */
   return dt ? (' · 数据 ' + dt.slice(5, 16) + (d.cached ? ' (本地缓存)' : '')) : '';
 }
 
@@ -18990,7 +18990,7 @@ function lh2When(d){
          + (wd ? ' (' + wd + ' 的行情, ' + ldrAgo(d.stale_sec) + '前)' : '');
   }
   var dt = String(d.data_time || '');
-  /* v2.399e: 上游挂着、这份是本地磁盘缓存 —— 说清楚, 别让人以为是刚拉的 */
+  /* v2.399: 上游挂着、这份是本地磁盘缓存 —— 说清楚, 别让人以为是刚拉的 */
   return dt ? (' · 数据 ' + dt.slice(5, 16) + (d.cached ? ' (本地缓存)' : '')) : '';
 }
 

@@ -88,7 +88,7 @@ def _size_of(payload):
                 return v
         except Exception:
             pass
-    # v2.399b: hot_money 也要算 —— 游资榜的 rows 是空的、内容全在 hot_money 分组里,
+    # v2.399: hot_money 也要算 —— 游资榜的 rows 是空的、内容全在 hot_money 分组里,
     #   只看 rows/tiers 会把它当成空表, 存档永远写不进去(实测 lhb_hm 一直缺档)。
     if payload.get('rows') or payload.get('tiers') or payload.get('stock_items'):
         return 1
@@ -179,7 +179,7 @@ def load(name):
 
 
 def age_of(iso):
-    '''「某个 YYYY-MM-DD HH:MM:SS 时刻」到现在多少秒; 解析不了返回 None（v2.399e）'''
+    '''「某个 YYYY-MM-DD HH:MM:SS 时刻」到现在多少秒; 解析不了返回 None（v2.399）'''
     try:
         s = str(iso or '').strip()
         if len(s) < 19:

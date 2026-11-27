@@ -29,7 +29,7 @@ DEPT_HISTORY = '/api/a-share/special-data/dragon-tiger-department-history'
 HOT_LIST = '/api/a-share/special-data/hot-stock-list'
 
 CACHE_TTL = {'lhb': 1800, 'hot': 60}
-# v2.399d: 这份榜实际是什么时候抓到的 —— {(board,date): {'ts': float, 'cached': bool}}
+# v2.399: 这份榜实际是什么时候抓到的 —— {(board,date): {'ts': float, 'cached': bool}}
 _SRC = {}
 
 
@@ -105,7 +105,7 @@ def _lhb_stale(board, err=None):
         p['data_time'] = (p.get('data_time') or o.get('saved_at') or '')
         p['data_date'] = o.get('data_date') or ''
         p['arch_time'] = o.get('saved_at') or ''
-        # v2.399e: 「多久之前」按数据本身时刻算, 不是按存档写入时刻
+        # v2.399: 「多久之前」按数据本身时刻算, 不是按存档写入时刻
         p['stale_sec'] = (_lg.age_of(p['data_time'])
                           if _lg.age_of(p['data_time']) is not None else (o.get('age_sec') or 0))
         if err:
@@ -127,7 +127,7 @@ def _lhb_raw(date, board='all'):
     name = 'lhb_%s_%s' % (board, d.replace('-', ''))
     c = _fl._load_json(name, max_age=CACHE_TTL['lhb'])
     if c:
-        # v2.399d: 缓存文件的 mtime = 这份榜最后一次真正抓到的时刻
+        # v2.399: 缓存文件的 mtime = 这份榜最后一次真正抓到的时刻
         try:
             _ts = os.path.getmtime(os.path.join(_fl.CACHE_DIR, name + '.json'))
         except Exception:

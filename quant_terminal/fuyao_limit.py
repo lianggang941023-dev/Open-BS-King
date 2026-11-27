@@ -47,7 +47,7 @@ _POOL_TTL = 60                                       # 盘中池子缓存秒数
 
 _MEM = {}                                            # 内存缓存 {key: (ts, value)}
 _PRUNE_LAST = [0.0]                                  # 上次清理按日缓存的时间(v2.399)
-# v2.399b: 每次返回的数据实际是什么时候的 —— {'ts': float, 'cached': bool}
+# v2.399: 每次返回的数据实际是什么时候的 —— {'ts': float, 'cached': bool}
 #   上游挂掉回落磁盘缓存时 ts = 缓存文件的 mtime(真实采集时刻), cached=True
 #   ⇒ 界面能显示「数据 15:41 (本地缓存)」而不是假装是刚刚拉的
 _SRC = {}
@@ -265,7 +265,7 @@ def _file_ts(name):
 
 
 def last_src(api, date):
-    '''这份数据实际是什么时候拿到的 —— {'ts': float, 'cached': bool}（v2.399b）'''
+    '''这份数据实际是什么时候拿到的 —— {'ts': float, 'cached': bool}（v2.399）'''
     try:
         return dict(_SRC.get('%s:%s' % (api, _norm_date(date))) or {})
     except Exception:

@@ -227,7 +227,7 @@ def ladder(date='', direction='up', force=False):
 
     counts = {'up': 0, 'down': 0, 'broken': 0, 'failed': 0}
 
-    _srcs = []          # v2.399b: 各路数据的真实采集时刻
+    _srcs = []          # v2.399: 各路数据的真实采集时刻
     if direction == 'up':
         up, e1 = _pull(_fl.limit_up_pool, date)
         if e1:
@@ -316,7 +316,7 @@ def ladder(date='', direction='up', force=False):
     touch = counts['up'] + counts['broken']
     seal_rate = round(seal_n / touch * 100.0, 1) if touch else 0.0
 
-    # v2.399c: 「数据时间」以**当日**那几路池子为准(昨日池只用于断板判定, 不算新鲜度)
+    # v2.399: 「数据时间」以**当日**那几路池子为准(昨日池只用于断板判定, 不算新鲜度)
     _all = [x for _d, x in _srcs]
     _cur = [x for _d, x in _srcs if _d == date]
     data = {
@@ -337,7 +337,7 @@ def ladder(date='', direction='up', force=False):
         'errors': errors,
         'elapsed': round(time.time() - t0, 2),
         'ts': time.strftime('%H:%M:%S'),
-        # v2.399b: 界面要看到「这份数据是什么时候的」—— 上游挂掉回落本地缓存时,
+        # v2.399: 界面要看到「这份数据是什么时候的」—— 上游挂掉回落本地缓存时,
         #   这里必须是缓存文件的真实采集时刻, 不能写成"现在"(否则看着像刚拉的实时数据)。
         'stale': False,
         'cached': bool(_cur) and all(x.get('cached') for x in _cur),
@@ -366,7 +366,7 @@ def ladder(date='', direction='up', force=False):
                                 or _o.get('saved_at') or '')
             _sp['data_date'] = _o.get('data_date') or ''
             _sp['arch_time'] = _o.get('saved_at') or ''
-            # v2.399e: 「多久之前」按数据本身时刻算
+            # v2.399: 「多久之前」按数据本身时刻算
             _a = _lg.age_of(_sp['data_time'])
             _sp['stale_sec'] = _a if _a is not None else (_o.get('age_sec') or 0)
             _sp['errors'] = list(errors) + [
