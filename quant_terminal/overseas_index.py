@@ -72,23 +72,23 @@ CODES = {
                  'secid': '100.HSI',   'group': 'asia'},
     'jp.n225':  {'name': '日经225',       'short': '日经',    'kind': 'gi', 'sym': 'NKY',
                  'secid': '100.N225',  'group': 'asia'},
-    'kr.ks11':  {'name': '韩国KOSPI',     'short': 'KOSPI',   'kind': 'gi', 'sym': 'KOSPI',
+    'kr.ks11':  {'name': '韩国KOSPI',     'short': '韩国',   'kind': 'gi', 'sym': 'KOSPI',
                  'secid': '100.KS11',  'group': 'asia'},
     'tw.twii':  {'name': '台湾加权',      'short': '台湾',    'kind': 'gi', 'sym': 'TWJQ',
                  'secid': '100.TWII',  'group': 'asia'},
-    'au.as51':  {'name': '澳大利亚标普200', 'short': 'AS51',  'kind': 'gi', 'sym': 'AS51',
+    'au.as51':  {'name': '澳大利亚标普200', 'short': '澳洲',  'kind': 'gi', 'sym': 'AS51',
                  'secid': '100.AS51',  'group': 'asia'},
 
     # ── 欧洲 ────────────────────────────────────────────────────────────
     'uk.ftse':  {'name': '英国富时100',   'short': '富时100', 'kind': 'gi', 'sym': 'UKX',
                  'secid': '100.FTSE',  'group': 'eu'},
-    'de.gdaxi': {'name': '德国DAX30',     'short': 'DAX',     'kind': 'gi', 'sym': 'DAX',
+    'de.gdaxi': {'name': '德国DAX30',     'short': '德国',     'kind': 'gi', 'sym': 'DAX',
                  'secid': '100.GDAXI', 'group': 'eu'},
-    'fr.fchi':  {'name': '法国CAC40',     'short': 'CAC40',   'kind': 'gi', 'sym': 'CAC',
+    'fr.fchi':  {'name': '法国CAC40',     'short': '法国',   'kind': 'gi', 'sym': 'CAC',
                  'secid': '100.FCHI',  'group': 'eu'},
 
     # ── 其它 ────────────────────────────────────────────────────────────
-    'in.sensex': {'name': '印度孟买SENSEX', 'short': 'SENSEX', 'kind': 'gi', 'sym': 'SENSEX',
+    'in.sensex': {'name': '印度孟买SENSEX', 'short': '印度', 'kind': 'gi', 'sym': 'SENSEX',
                   'secid': '100.SENSEX', 'group': 'other'},
     'sg.cn00y': {'name': '富时中国A50期货', 'short': 'A50',    'kind': 'a50', 'sym': 'CHA50CFD',
                  'secid': '104.CN00Y', 'group': 'other', 'div': 10},

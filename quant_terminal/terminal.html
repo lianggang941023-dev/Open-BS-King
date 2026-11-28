@@ -22634,7 +22634,9 @@ function idxlPaintList(){
       +  'background:' + (on ? 'rgba(240,192,64,0.12)' : 'transparent') + ';'
       +  'display:flex;align-items:baseline;gap:5px;white-space:nowrap;overflow:hidden">'
       +  '<span style="font-size:11px;color:' + (on ? 'var(--gold)' : 'var(--tx0)')
-      +  ';font-weight:' + (on ? '700' : '400') + ';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">'
+      +  ';font-weight:' + (on ? '700' : '400') + ';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis"'
+      /* v2.411 (用户 m11935): 左列只放得下两三个字, 全名放进悬停浮窗 —— 一眼能看出是哪个国家的指数 */
+      +  ' title="' + escAttr((r.name || r.code) + '  ' + String(r.code || '').toUpperCase()) + '">'
       +  escAttr(r.short || r.name || r.code) + '</span>'
       /* v2.410 (用户 m11576): 海外指数的交易时段与 A 股完全不同 —— 直接标在名字后面,
          一眼能看出「这只现在开盘没有」。A 股指数没有 sess 字段, 这一格自然为空。 */

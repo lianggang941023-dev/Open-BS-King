@@ -75,13 +75,13 @@ ALL = {
     'us.inx': {'name': '标普500', 'short': '标普', 'src': 'overseas'},
     'hk.hsi': {'name': '恒生指数', 'short': '恒生', 'src': 'overseas'},
     'jp.n225': {'name': '日经225', 'short': '日经', 'src': 'overseas'},
-    'kr.ks11': {'name': '韩国KOSPI', 'short': 'KOSPI', 'src': 'overseas'},
+    'kr.ks11': {'name': '韩国KOSPI', 'short': '韩国', 'src': 'overseas'},
     'tw.twii': {'name': '台湾加权', 'short': '台湾', 'src': 'overseas'},
-    'au.as51': {'name': '澳大利亚标普200', 'short': 'AS51', 'src': 'overseas'},
+    'au.as51': {'name': '澳大利亚标普200', 'short': '澳洲', 'src': 'overseas'},
     'uk.ftse': {'name': '英国富时100', 'short': '富时100', 'src': 'overseas'},
-    'de.gdaxi': {'name': '德国DAX30', 'short': 'DAX', 'src': 'overseas'},
-    'fr.fchi': {'name': '法国CAC40', 'short': 'CAC40', 'src': 'overseas'},
-    'in.sensex': {'name': '印度孟买SENSEX', 'short': 'SENSEX', 'src': 'overseas'},
+    'de.gdaxi': {'name': '德国DAX30', 'short': '德国', 'src': 'overseas'},
+    'fr.fchi': {'name': '法国CAC40', 'short': '法国', 'src': 'overseas'},
+    'in.sensex': {'name': '印度孟买SENSEX', 'short': '印度', 'src': 'overseas'},
     'sg.cn00y': {'name': '富时中国A50期货', 'short': 'A50', 'src': 'overseas'},
 }
 

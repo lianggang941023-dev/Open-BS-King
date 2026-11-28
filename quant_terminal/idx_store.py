@@ -83,13 +83,13 @@ for _c, _nm, _sh in (
         ('us.inx', '标普500', '标普'),
         ('hk.hsi', '恒生指数', '恒生'),
         ('jp.n225', '日经225', '日经'),
-        ('kr.ks11', '韩国KOSPI', 'KOSPI'),
+        ('kr.ks11', '韩国KOSPI', '韩国'),
         ('tw.twii', '台湾加权', '台湾'),
-        ('au.as51', '澳大利亚标普200', 'AS51'),
+        ('au.as51', '澳大利亚标普200', '澳洲'),
         ('uk.ftse', '英国富时100', '富时100'),
-        ('de.gdaxi', '德国DAX30', 'DAX'),
-        ('fr.fchi', '法国CAC40', 'CAC40'),
-        ('in.sensex', '印度孟买SENSEX', 'SENSEX'),
+        ('de.gdaxi', '德国DAX30', '德国'),
+        ('fr.fchi', '法国CAC40', '法国'),
+        ('in.sensex', '印度孟买SENSEX', '印度'),
         ('sg.cn00y', '富时中国A50期货', 'A50'),
 ):
     IDX_INFO[_c] = (_nm, _sh)
