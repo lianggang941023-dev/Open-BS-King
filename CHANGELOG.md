@@ -20,6 +20,100 @@
 ---
 
 ---
+## v2.409 — 2026-11-28
+
+### 一、这次做了什么
+
+「市场总览 → 指数一览」从 17 只扩到 **31 只**，新增 **14 个海外指数**，而且**历史全部存在本地**
+（`kline_data/index_daily/` 下每个指数一个 CSV，跟 A 股指数同一套格式、同一个目录）。
+
+| 代码 | 名称 | 短名 | 本地历史 |
+|---|---|---|---|
+| us.dji | 道琼斯 | 道指 | 5765 根 / 2004-01-02 ~ |
+| us.ixic | 纳斯达克 | 纳指 | 5763 根 / 2004-01-02 ~ |
+| us.ndx | 纳斯达克100 | 纳100 | 3214 根 / 2014-02-18 ~ |
+| us.inx | 标普500 | 标普 | 5766 根 / 2004-01-02 ~ |
+| hk.hsi | 恒生指数 | 恒生 | 1000 根 / 2022-11-03 ~ |
+| jp.n225 | 日经225 | 日经 | 1000 根 / 2022-11-14 ~ |
+| kr.ks11 | 韩国KOSPI | KOSPI | 1000 根 / 2022-11-03 ~ |
+| tw.twii | 台湾加权 | 台湾 | 1000 根 / 2022-10-12 ~ |
+| au.as51 | 澳大利亚标普200 | AS51 | 1000 根 / 2022-12-29 ~ |
+| uk.ftse | 英国富时100 | 富时100 | 1000 根 / 2022-12-14 ~ |
+| de.gdaxi | 德国DAX30 | DAX | 1000 根 / 2022-12-23 ~ |
+| fr.fchi | 法国CAC40 | CAC40 | 1000 根 / 2022-12-30 ~ |
+| in.sensex | 印度孟买SENSEX | SENSEX | 1000 根 / 2022-11-24 ~ |
+| sg.cn00y | 富时中国A50期货 | A50 | 2594 根 / 2016-11-28 ~ |
+
+### 二、四条日K源（为什么不是一个接口搞定）
+
+不是我们挑三拣四，是实测下来每个源覆盖的范围不一样：
+
+1. **美股四只 → 新浪美股日K JSONP**
+   `stock.finance.sina.com.cn/usstock/api/jsonp.php/var%20_=/US_MinKService.getDailyK?symbol=.DJI`
+   直连可用、**不需要 py_mini_racer**（akshare 那个 `index_us_stock_sina` 内部就是它 + JS 解密，
+   慢且非线程安全，所以这里自己打原始接口）。能回溯到 2004 年。
+2. **日经/韩国/台湾/欧洲/印度/澳洲 → 新浪全球指数日K**
+   `gi.finance.sina.com.cn/hq/daily?symbol=NKY&num=1000`
+   ⚠ 返回结构是 `{"code":0,"result":{"data":[...]}}`（**不是**顶层 `data`）；
+   ⚠ `num` 上限**卡死在 1000 根**，翻页参数（page/start/offset）全部无效 ⇒ 这几只只能回溯约 4 年。
+3. **恒生 → 腾讯 `hkHSI`**（新浪 gi 没有恒生；列序与 `_norm_tencent_bars` 完全一致，直接复用）；
+4. **A50 期货 → 新浪期货 JSONP**
+   `stock.finance.sina.com.cn/futures/api/jsonp.php/var%20_=/GlobalFuturesService.getGlobalFuturesDailyKLine?symbol=CHA50CFD`
+   2594 根 / 2016-11-28 起。字段里没有成交额，只有 `volume` 和 `position`（持仓量）。
+
+### 三、分时（实时走势）
+
+**只有一条通路：东财 `push2his` 的 `stock/trends2/get`，而且必须走 http**（https 那条 `RemoteDisconnected`）。
+13/14 只都有分时，各 211~751 个点。
+
+🔴 **纳指100（us.ndx）没有分时可用** —— 这不是没做，是**数据源本身没有**：东财 `100.NDX` 那个 secid
+返回的其实是「纳斯达克综合」（数值 24129.50 与新浪 `gb_$ixic` 一模一样），真正的纳指100 东财没有；
+新浪/腾讯/Yahoo/同花顺各条路都试过（腾讯只回 1 个点、Yahoo 403、同花顺 404）。
+所以界面上选到它会显示一行灰字「纳100 暂无分时数据源，可看日K」，**不是报错**。
+
+### 四、几个必须知道的口径与坑
+
+- **东财 `100.NDX` 就是纳斯达克综合**，所以 `us.ixic`（纳指）的分时借用了它；`us.ndx`（纳指100）反而没分时。
+- **东财对期货只放大 10 倍，不是 100 倍**。A50 期货 `f43=130510` 对应 `13051.0` ⇒ 除 10。
+  第一版按除 100 算出来是 `1305.1`，已修。
+- **海外交易时段与 A 股不同**（美股 22:30 开盘、亚洲白天），所以 `_index_guard_loop` 对海外指数
+  **跳过 `_is_trade_window()` 判断**，否则会被 A 股时段整天挡住永远不同步。
+- **本轮不造海外 live bar**（`_live_index_bar` 对海外直接返回 None）。理由三条：
+  ① 硬造一个没收盘的 bar 会在海外休市日写进假行；② `/api/idx_list` 的设计前提是「只读本地零网络」；
+  ③ 指数一览只画历史日K + 分时，本来就不依赖 live。海外的实时价由 `overseas_index.snapshot()` 单独供。
+- **`MarketSentiment.fetch()` 必须过滤海外码** —— `ds.fetch_realtime()` 只认 sina/tencent 的 A 股代码，
+  海外码传进去会被当成个股拼出垃圾请求。现在先滤掉，再用 `snapshot()` 单独补实时价。
+
+### 五、新增 / 改动的文件
+
+- **新增 `quant_terminal/overseas_index.py`**（约 380 行）：14 个指数的唯一一份代码表（代码/名称/短名/
+  源类型/源符号/东财 secid）+ `full_bars()` / `tail_bars()` / `minute()` / `snapshot()` / `selftest()`。
+- `quant_terminal/idx_registry.py`：`ALL` 加 14 项（`src='overseas'`）、新增 `OVERSEAS_CODES` 常量、
+  `LIST_CODES` 末尾追加、`selftest()` 的 src 白名单加 `'overseas'`。
+- `quant_terminal/idx_store.py`：`IDX_INFO` 加 14 项显示名/短名、`LIST_CODES` 同步、新增 `_is_overseas()`、
+  `_ensure_overseas()` / `_sync_overseas()` 两个 helper，`ensure` / `sync` / `deepen` 三处加分流。
+- `quant_terminal/engine.py`：`_fetch_index_full` / `_fetch_index_tail` / `_live_index_bar` 三处加
+  `src_of(code)=='overseas'` 分支；`MarketSentiment.fetch()` 过滤海外码 + 单独补实时价。
+- `quant_terminal/server.py`：`mini_minute` 的 `kind=='index'` 加海外分支（否则会拼出 `szus.DJI` 炸掉）；
+  `_index_guard_loop` 对海外跳过 A 股盘中判定；分时失败兜底把 `no_minute` 透出来（区分「没有源」和「取数失败」）。
+- `quant_terminal/terminal.html`：`idxlLoadM` 加「暂无分时数据源」软提示分支（灰字，不是红字报错）；
+  `idxlDrawM` 的分时线色改成按「末价 vs 昨收」红/绿 + 渐变面积（原来是恒定金色，看不出涨跌）。
+
+### 六、实测
+
+- `idx_store.selftest()`：31 只全部有本地历史，14 只海外全部就位。
+- `GET /api/idx_list?limit=2` → **31 行**，海外 14 行都在，`regime` 也算出来了（30 行以上就能算）。
+- `GET /api/kline?code=us.dji` → `count=5765, last_date=2026-11-27, is_index=true`。
+- `GET /api/mini_minute?kind=index&code=us.dji` → `ok=true, source=东财分时, 211 点, pre=50182.95`。
+- `GET /api/mini_minute?kind=index&code=us.ndx` → `ok=false, no_minute=纳100 暂无分时数据源，可看日K`。
+- 浏览器实测（1707×979，深/浅主题各一张）：左列 31 行、海外 14 行短名/现价/涨跌幅/趋势词都正常；
+  选道琼斯 → 日K 5765 根全画出来 + 分时 211 点红色渐变；选纳指100 → 日K 正常 + 分时灰字提示。
+
+### 七、首次落盘耗时
+
+14 只全量拉一遍 **4.3 秒**（美股四只各 0.4~0.6 秒，其余 0.2~0.3 秒）。
+后续开机预热走 `idx_store.prewarm()` 自动跑，盘后 `_index_guard_loop` 每日增量（只拉最近 10 根比对末行）。
+
 ## v2.408 — 2026-11-28
 
 窗口版 K 线：分时图的渐变改成按 0 轴分色（0 轴上方红、下方绿），不再整天一个颜色。

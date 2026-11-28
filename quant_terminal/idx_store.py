@@ -30,6 +30,7 @@ import time
 from datetime import datetime, timedelta
 
 from quant_terminal import engine as E
+from quant_terminal import idx_registry as _idxr   # v2.409: 海外指数代码表
 
 # ── 指数登记表 ────────────────────────────────────────────────────────────
 # code → (显示名, 短名)。顺序 = 「指数一览」里的默认顺序。
@@ -70,7 +71,28 @@ LIST_CODES = ('sh000001', 'sz399001', 'sz399006', 'sh000680', 'sh000688',
               'sh000300', 'sz399905',
               '883957', 'sh000852', 'sh000985', 'sh000016', 'sh000922',
               # v2.367 (用户 m40047): 5 只沪深300ETF 接在最后
-              ) + ETF_CODES
+              ) + ETF_CODES + _idxr.OVERSEAS_CODES
+
+
+# v2.409 (用户 m11025): 14 个海外指数。显示名/短名与 idx_registry 保持一份口径,
+#   但短名这里用更短的 (左列 244px 放得下) —— 全名给 tooltip。
+for _c, _nm, _sh in (
+        ('us.dji', '道琼斯', '道指'),
+        ('us.ixic', '纳斯达克', '纳指'),
+        ('us.ndx', '纳斯达克100', '纳100'),
+        ('us.inx', '标普500', '标普'),
+        ('hk.hsi', '恒生指数', '恒生'),
+        ('jp.n225', '日经225', '日经'),
+        ('kr.ks11', '韩国KOSPI', 'KOSPI'),
+        ('tw.twii', '台湾加权', '台湾'),
+        ('au.as51', '澳大利亚标普200', 'AS51'),
+        ('uk.ftse', '英国富时100', '富时100'),
+        ('de.gdaxi', '德国DAX30', 'DAX'),
+        ('fr.fchi', '法国CAC40', 'CAC40'),
+        ('in.sensex', '印度孟买SENSEX', 'SENSEX'),
+        ('sg.cn00y', '富时中国A50期货', 'A50'),
+):
+    IDX_INFO[_c] = (_nm, _sh)
 
 # 特色指标的三组比值 —— (分子, 分母, 显示名)
 PAIRS = (
@@ -98,6 +120,17 @@ def _is_em(code):
     """
     try:
         return E._idxr.src_of((code or '').lower()) == 'em'
+    except Exception:
+        return False
+
+
+def _is_overseas(code):
+    """v2.409: 是不是海外指数（走 overseas_index.py 那条独立取数通路）。
+
+    与 _is_em 同款判据 —— 只看 idx_registry.src_of()，不在这里再抄一份代码表。
+    """
+    try:
+        return _idxr.src_of((code or '').lower()) == 'overseas'
     except Exception:
         return False
 
@@ -215,6 +248,51 @@ def fetch_deep(code, max_pages=12, pause=0.05):
     return rows
 
 
+def _ensure_overseas(code, local=None):
+    """v2.409: 海外指数全量落盘。只在「拿到的比本地更全」时才覆盖（与 ensure 同一护栏）。"""
+    from quant_terminal import overseas_index as _ov
+    try:
+        rows = _ov.full_bars(code)
+    except Exception:
+        rows = []
+    if not rows:
+        return len(local or load(code))
+    rows = E._drop_forming_today(rows)
+    if not rows:
+        return len(local or load(code))
+    cur = local if local is not None else load(code)
+    if cur and len(rows) <= len(cur) and rows[-1]['date'] <= cur[-1]['date']:
+        return len(cur)
+    save(code, rows)
+    return len(rows)
+
+
+def _sync_overseas(code, local=None):
+    """v2.409: 海外指数增量补齐。返回 'appended:N' / 'noop' / 'fail'。"""
+    from quant_terminal import overseas_index as _ov
+    loc = local if local is not None else load(code)
+    try:
+        tail = _ov.tail_bars(code, 10)
+    except Exception:
+        tail = []
+    if not tail:
+        return 'fail'
+    tail = E._drop_forming_today(tail)
+    if not tail:
+        return 'noop'
+    if not loc:
+        return 'missing-rebuilt' if _ensure_overseas(code, loc) else 'fail'
+    last = loc[-1]['date']
+    add = [b for b in tail if b['date'] > last]
+    if not add:
+        return 'noop'
+    seen = {}
+    for b in loc + add:
+        seen[b['date']] = b
+    save(code, [seen[k] for k in sorted(seen)])
+    return 'appended:%d' % len(add)
+
+
 def ensure(code, min_rows=0, deep=True):
     """本地缺失/行数不足 → 全量（深）回补落盘。返回最终行数。
 
@@ -237,6 +315,9 @@ def ensure(code, min_rows=0, deep=True):
             except Exception:
                 pass
             return len(load(code))
+        # v2.409: 海外指数 —— 源本身没有翻页能力，一次拉全量。
+        if _is_overseas(code):
+            return _ensure_overseas(code, local)
         rows = fetch_deep(code) if deep else _page(code, '')
         if not rows:
             return len(local)
@@ -268,6 +349,9 @@ def sync(code):
                 return E.sync_index_daily(code, force=True)
             except Exception:
                 return 'fail'
+        # v2.409: 海外指数增量 —— 拉最近 10 根比对末行。
+        if _is_overseas(code):
+            return _sync_overseas(code, local)
         tail = _page(code, '')[-10:]
         if not tail:
             return 'fail'
@@ -408,6 +492,9 @@ def deepen(code, min_start='2015-01-01', pause=0.05):
                 except Exception:
                     pass
             return len(load(code))
+        # v2.409: 海外指数没有翻页能力，一次全量即可（源多深就多深）。
+        if _is_overseas(code):
+            return _ensure_overseas(code, local)
         rows = fetch_deep(code, pause=pause)
         if not rows:
             return len(local)

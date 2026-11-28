@@ -62,6 +62,27 @@ ALL = {
     'sh510330': {'name': '沪深300ETF华夏', 'short': '300华夏', 'src': 'em'},
     'sz159919': {'name': '沪深300ETF嘉实', 'short': '300嘉实', 'src': 'em'},
     'sh515330': {'name': '沪深300ETF天弘', 'short': '300天弘', 'src': 'em'},
+
+    # ── v2.409 (用户 m11025): 14 个海外指数。src 单独开一条 'overseas' ──
+    #   为什么单独一条通路: 代码是带点前缀(us.DJI / hk.HSI ...), 6 位数字那套
+    #   源(腾讯/新浪A股/同花顺/东财ETF)一个都取不到。取数与分时全在
+    #   overseas_index.py 里(那边也是「全仓唯一一份」: 代码/短名/源符号/东财 secid)。
+    #   🔴 纳指综合 us.ixic 的分时借用东财 100.NDX —— 实测那个 secid 的数值
+    #   与新浪 gb_$ixic(纳斯达克综合)完全一致, 真正的纳指100 东财没有分时。
+    'us.dji': {'name': '道琼斯', 'short': '道指', 'src': 'overseas'},
+    'us.ixic': {'name': '纳斯达克', 'short': '纳指', 'src': 'overseas'},
+    'us.ndx': {'name': '纳斯达克100', 'short': '纳100', 'src': 'overseas'},
+    'us.inx': {'name': '标普500', 'short': '标普', 'src': 'overseas'},
+    'hk.hsi': {'name': '恒生指数', 'short': '恒生', 'src': 'overseas'},
+    'jp.n225': {'name': '日经225', 'short': '日经', 'src': 'overseas'},
+    'kr.ks11': {'name': '韩国KOSPI', 'short': 'KOSPI', 'src': 'overseas'},
+    'tw.twii': {'name': '台湾加权', 'short': '台湾', 'src': 'overseas'},
+    'au.as51': {'name': '澳大利亚标普200', 'short': 'AS51', 'src': 'overseas'},
+    'uk.ftse': {'name': '英国富时100', 'short': '富时100', 'src': 'overseas'},
+    'de.gdaxi': {'name': '德国DAX30', 'short': 'DAX', 'src': 'overseas'},
+    'fr.fchi': {'name': '法国CAC40', 'short': 'CAC40', 'src': 'overseas'},
+    'in.sensex': {'name': '印度孟买SENSEX', 'short': 'SENSEX', 'src': 'overseas'},
+    'sg.cn00y': {'name': '富时中国A50期货', 'short': 'A50', 'src': 'overseas'},
 }
 
 # v2.367: ETF 子集（顺序 = 特色指标分子的固定顺序，别随手调）
@@ -79,6 +100,9 @@ SLOTS = {
     'sz399905': ('sz399905', '883957', 'sh000852', 'sh000985', 'sh000016', 'sh000300', 'sh000922'),
 }
 
+# v2.409: 海外指数代码 (顺序 = 指数一览左列顺序)
+OVERSEAS_CODES = ('us.dji', 'us.ixic', 'us.ndx', 'us.inx', 'hk.hsi', 'jp.n225', 'kr.ks11', 'tw.twii', 'au.as51', 'uk.ftse', 'de.gdaxi', 'fr.fchi', 'in.sensex', 'sg.cn00y')
+
 # 所有需要本地日K + 实时 + 存档的指数（= 登记表全集，顺序稳定便于日志对齐）
 BAR_CODES = tuple(ALL.keys())
 
@@ -87,7 +111,10 @@ BAR_CODES = tuple(ALL.keys())
 LIST_CODES = (TOP7
               + ('883957', 'sh000852', 'sh000985', 'sh000016', 'sh000922')
               # v2.367 (用户 m40047)：5 只沪深300ETF 接在最后 —— 顺序 = 页面左列从上到下
-              + ETF_CODES)
+              + ETF_CODES
+              # v2.409 (用户 m11025)：14 个海外指数接在最后。顺序 = 页面左列从上到下,
+              #   美股 → 亚太 → 欧洲 → 其它。
+              + OVERSEAS_CODES)
 
 
 def name_of(code):
@@ -116,7 +143,7 @@ def is_index(code):
 
 
 def src_of(code):
-    """取数通路：'tencent' | 'ths' | ''（不认识的返回空串）。"""
+    """取数通路：'tencent' | 'ths' | 'em' | 'overseas' | ''（不认识的返回空串）。"""
     it = ALL.get(norm(code))
     return it['src'] if it else ''
 
@@ -144,7 +171,7 @@ def selftest():
             if c not in ALL:
                 print('!! 槽 %s 的候选 %s 不在登记表' % (slot, c)); ok = False
     for c, it in ALL.items():
-        if it['src'] not in ('tencent', 'ths', 'em'):
+        if it['src'] not in ('tencent', 'ths', 'em', 'overseas'):
             print('!! %s 的 src=%r 不认识' % (c, it['src'])); ok = False
     print('登记表 %d 只 / 顶栏 %d 格 / 可换 %d 格'
           % (len(ALL), len(TOP7), len(SLOTS)))

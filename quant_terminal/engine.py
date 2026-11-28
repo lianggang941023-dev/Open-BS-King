@@ -191,6 +191,11 @@ def _fetch_index_full(code: str) -> Optional[List[Dict]]:
     if _idxr.src_of(code) == 'em':
         from quant_terminal import etf_src as _etf
         return _etf.full_bars(code) or None
+    # v2.409 (用户 m11025): 海外指数。代码带点前缀(us.DJI/hk.HSI...), 与 A 股那几条
+    #   通路完全不兼容 —— 取数/分时全在 overseas_index.py 里（那边是唯一一份代码表）。
+    if _idxr.src_of(code) == 'overseas':
+        from quant_terminal import overseas_index as _ov
+        return _ov.full_bars(code) or None
     if code in INDEX_DAILY_SINA:
         return fetch_sina_daily(code, 1500)
     # v2.366: 原来只取 count='2000'(腾讯单次上限) 就直接返回 —— 沪深300/中证红利/
@@ -211,6 +216,9 @@ def _fetch_index_tail(code: str, n: int = 10) -> Optional[List[Dict]]:
     if _idxr.src_of(code) == 'em':          # v2.367: ETF 走东财
         from quant_terminal import etf_src as _etf
         return _etf.tail_bars(code, n) or None
+    if _idxr.src_of(code) == 'overseas':    # v2.409: 海外指数
+        from quant_terminal import overseas_index as _ov
+        return _ov.tail_bars(code, n) or None
     if code in INDEX_DAILY_SINA:
         return fetch_sina_daily(code, n)
     return _norm_tencent_bars(_fqkline_req(code, count=str(n)), code) or None
@@ -371,6 +379,13 @@ def _live_index_bar(code: str) -> Optional[Dict]:
     (同源同单位手, 与历史同构); 失败→新浪实时兜底 (fields[8]量股÷100→手)
     v2.360 (用户 m38439): src='ths' 的指数(同花顺全A 883957)走同花顺分时 —— 腾讯/新浪都没有它。
     """
+    # v2.409 (用户 m11025): 海外指数的交易时段与 A 股不同(美股 22:30 才开),
+    #   不能用 _is_trade_window() 挡。但本轮**不造 live bar** —— 理由:
+    #     1) 硬造一个没收盘的 bar 会在海外休市日写进假行; 2) /api/idx_list 的设计
+    #        前提是「只读本地零网络」; 3) 指数一览页只画历史日K + 分时, 不依赖 live。
+    #   实时价由 overseas_index.snapshot() 供（顶栏/卡片用）, 与 live bar 是两回事。
+    if _idxr.src_of(code) == 'overseas':
+        return None
     if not _is_trade_window():
         return None
     if _idxr.src_of(code) == 'ths':
@@ -5044,8 +5059,12 @@ class MarketSentiment:
         # v2.360 (用户 m38512): 登记表全集。tencent 通路走 ds.fetch_realtime;
         #   ths 通路(同花顺全A) ds 没有 provider, 单独补 —— 否则顶栏那格永远空。
         codes = list(_idxr.BAR_CODES)
+        # v2.409 (用户 m11025): ds.fetch_realtime 只认 sina/tencent 的 A 股代码,
+        #   海外码(us.DJI...)传进去会被当成个股拼出垃圾请求 ⇒ 这里先滤掉。
+        #   海外的实时价下面用 overseas_index.snapshot() 单独补(与 ths 那条同款)。
+        _local_codes = [c for c in codes if _idxr.src_of(c) != 'overseas']
         try:
-            q = ds.fetch_realtime(codes)
+            q = ds.fetch_realtime(_local_codes)
             for code, v in q.items():
                 if code.startswith('_') or code in self.index_data:
                     continue
@@ -5070,6 +5089,24 @@ class MarketSentiment:
                     'name': _m.get('name') or _idxr.name_of(_c),
                     'price': round(float(_m.get('last') or 0), 3),
                     'change_pct': round(float(_m.get('pct') or 0), 2),
+                    'amount_yi': 0.0,
+                }
+            except Exception:
+                pass
+        # v2.409 (用户 m11025): 海外指数补实时价 —— 走东财 push2 快照。
+        #   失败不抛(海外休市/接口抖动都正常), 拿不到就留空, 顶栏只显示本地日K末根。
+        for _c in codes:
+            if _idxr.src_of(_c) != 'overseas' or _c in self.index_data:
+                continue
+            try:
+                from quant_terminal import overseas_index as _ovq
+                _sq = _ovq.snapshot(_c)
+                if not _sq.get('ok'):
+                    continue
+                self.index_data[_c] = {
+                    'name': _sq.get('name') or _idxr.name_of(_c),
+                    'price': round(float(_sq.get('price') or 0), 3),
+                    'change_pct': round(float(_sq.get('pct') or 0), 2),
                     'amount_yi': 0.0,
                 }
             except Exception:

@@ -22688,6 +22688,15 @@ function idxlDrawM(){
   var yMax = Math.round((hi + pad) * 100) / 100;
   var yIv = Math.round((yMax - yMin) / 5 * 100) / 100;   /* 5 段, 与左轴 6 个刻度对齐 */
   var last = prices.length ? prices[prices.length - 1] : null;
+  /* v2.409 (用户 m11025): 分时线色按「末价 vs 昨收」红/绿（原来恒定金色，看不出涨跌），
+     并加一层自上而下渐隐的面积 —— 与窗口版 K 线（v2.408）同一套口径。 */
+  var _up = !(pre > 0) || !(last != null) || (last >= pre);
+  var _flat = (pre > 0 && last != null && Math.abs(last - pre) < 1e-9);
+  var _lc = _flat ? 'rgba(161,161,170,1)' : (_up ? '#C74040' : '#2D9B65');
+  var _af = _flat ? 'rgba(180,180,190,0.35)' : (_up ? 'rgba(199,64,64,0.35)' : 'rgba(34,197,94,0.35)');
+  var _as = {origin: 'start',
+             color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+                     colorStops: [{offset: 0, color: _af}, {offset: 1, color: 'rgba(0,0,0,0)'}]}};
   var pctOf = function(v){ return pre > 0 ? (v - pre) / pre * 100 : 0; };
   var pctTx = function(v){ var p = pctOf(v); return (p > 0 ? '+' : '') + p.toFixed(2) + '%'; };
   var mk = {silent: true, symbol: 'none', animation: false, data: []};
@@ -22736,8 +22745,8 @@ function idxlDrawM(){
                          formatter: function(v){ return (pctOf(+v) > 0 ? '+' : '') + pctOf(+v).toFixed(2) + '%'; }},
              splitLine: {show: false}}],
     series: [{type: 'line', data: prices, showSymbol: false, connectNulls: false,
-              lineStyle: {width: 1.2, color: TH2.gold}, itemStyle: {color: TH2.gold},
-              areaStyle: {color: 'rgba(240,192,64,0.06)'},
+              lineStyle: {width: 1.2, color: _lc}, itemStyle: {color: _lc},
+              areaStyle: _as,
               markLine: mk.data.length ? mk : undefined}]
   }, true);
   try{ ch.resize(); }catch(e){}
@@ -22778,6 +22787,18 @@ async function idxlLoadM(code){
     var d = await api('/api/mini_minute?kind=index&code=' + encodeURIComponent(code));
     /* v2.363b: 同 idxlLoadK —— 过期响应丢弃 */
     if(idxlSt.cur !== code) return;
+    /* v2.409 (用户 m11025): 海外指数里有几只**数据源本身**就没有分时（纳指100）。
+       这不是取数失败，别用红字报错 —— 画个灰字提示，日K照常看。 */
+    if(d && d.ok === false && d.no_minute){
+      idxlSt.mdata = null;
+      if(idxlSt.cm){ try{ idxlSt.cm.dispose(); }catch(e){} idxlSt.cm = null; }
+      var _mb = $('idxl-m');
+      if(_mb){ _mb.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;'
+        + 'height:100%;color:var(--tx3);font-size:12px;padding:0 18px;text-align:center;line-height:1.7">'
+        + mEsc(d.no_minute) + '</div>'; }
+      idxlMsg('');
+      return;
+    }
     if(!d || d._err || !d.ok){ idxlMsg('分时取数失败', 'err'); return; }
     if(d.stale) idxlMsg('分时为上一交易日缓存', 'busy');
     idxlSt.mdata = d;

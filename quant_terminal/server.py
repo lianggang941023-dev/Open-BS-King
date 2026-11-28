@@ -1851,9 +1851,14 @@ def _index_guard_loop():
                     if rows is None:
                         ensure_index_daily(code)  # 缺失自愈 (暂停期也做, 盘中建库滤forming)
                         continue
-                    if _is_trade_window():
+                    # v2.409 (用户 m11025): 海外指数的交易时段与 A 股不同（美股夜间、
+                    #   亚洲白天）, 用 A 股 _is_trade_window() 判断会把它整天挡住 ⇒
+                    #   只对 A 股那批沿用「盘中绝不写盘」；海外一律走下面的增量同步,
+                    #   由 overseas_index.tail_bars() 决定有没有新数据（没新数据就是 noop）。
+                    _ovs = (_idxr.src_of(code) == 'overseas')
+                    if (not _ovs) and _is_trade_window():
                         continue  # 盘中绝不写盘 (实时性由读路径 with_live 承担)
-                    evn = t >= 1505 and _IDX_GUARD['synced_on'].get(code) != today
+                    evn = (t >= 1505 or _ovs) and _IDX_GUARD['synced_on'].get(code) != today
                     back = (not evn) and (not paused) and rows[-1]['date'] < recent_wd
                     if not (evn or back):
                         continue
@@ -3548,6 +3553,28 @@ def mini_minute(kind, code, ttl=_MINI_TTL):
                 date = _md
                 src = '同花顺分时'
                 url = 'https://d.10jqka.com.cn/v6/time/48_%s/last.js' % code
+            elif _idxr.src_of(code) == 'overseas':
+                # v2.409 (用户 m11025): 海外指数分时 —— 东财 trends2（必须走 http,
+                #   https 那条被封)。取数逻辑全在 overseas_index.minute 里。
+                #   ⚠ 不在这里拼 sh/sz 前缀 —— 海外代码带点(us.DJI), 拼了必炸。
+                from quant_terminal import overseas_index as _ovm
+                _mm = _ovm.minute(code)
+                if not _mm.get('ok'):
+                    raise ValueError(_mm.get('error') or _mm.get('no_minute')
+                                     or '海外指数分时取不到')
+                _md = str(_mm.get('date') or '')
+                _md = ('%s-%s-%s' % (_md[:4], _md[4:6], _md[6:])) if len(_md) == 8 else _md
+                _nm = _mm.get('name') or _idxr.name_of(code)
+                _l = _line_of('main', {'name': _nm, 'pre': _mm.get('pre') or 0,
+                                       'date': _md,
+                                       'times': _mm.get('times') or [],
+                                       'prices': _mm.get('prices') or []},
+                              code, name=_nm)
+                _l['source'] = 'em_trends'
+                lines = [_l]
+                date = _md
+                src = '东财分时'
+                url = getattr(_ovm, 'MINUTE_URL', '')
             else:
                 # 其余大盘指数: 10jqka 不认 sh000001 这类代码, 走腾讯(与分时图同源同口径)
                 _l, date = _tx_line(code if code.lower().startswith(('sh', 'sz', 'bj'))
@@ -3594,8 +3621,23 @@ def mini_minute(kind, code, ttl=_MINI_TTL):
             old['age'] = int(max(0, now - float(it.get('ts') or 0)))
             old['err'] = err or '本次拉取失败, 显示的是上次的数据'
             return old
-        return {'ok': False, 'kind': kind, 'code': code, 'stale': True,
-                'error': err or '没取到分时数据', 'lines': []}
+        # v2.409 (用户 m11025): 海外指数里纳指100 这类**数据源本身**就没有分时的，
+        #   要能把「不是故障」这件事告诉前端（否则界面红字报错，像我们坏了）。
+        _nomm = ''
+        try:
+            if kind == 'index' and _idxr.src_of(code) == 'overseas':
+                from quant_terminal import overseas_index as _ovn
+                _nm2 = _ovn.minute(code)
+                if (not _nm2.get('ok')) and _nm2.get('no_minute'):
+                    _nomm = str(_nm2.get('no_minute') or '')
+        except Exception:
+            pass
+        _r = {'ok': False, 'kind': kind, 'code': code, 'stale': True,
+              'error': err or '没取到分时数据', 'lines': []}
+        if _nomm:
+            _r['no_minute'] = _nomm
+            _r['stale'] = False
+        return _r
 
     out = {'ok': True, 'kind': kind, 'code': code,
            'date': date or time.strftime('%Y-%m-%d'),
