@@ -1858,7 +1858,17 @@ def _index_guard_loop():
                     _ovs = (_idxr.src_of(code) == 'overseas')
                     if (not _ovs) and _is_trade_window():
                         continue  # 盘中绝不写盘 (实时性由读路径 with_live 承担)
-                    evn = (t >= 1505 or _ovs) and _IDX_GUARD['synced_on'].get(code) != today
+                    # v2.410 (用户 m11576): 海外的「每天同步一次」不能按北京日期 ——
+                    #   美股夜里开盘时北京已是次日, 收盘后反而不补。用该市场自己最近
+                    #   一个已收盘的交易日(当地时间, 跳过周末)做同步键。
+                    _gkey = today
+                    if _ovs:
+                        try:
+                            from quant_terminal import overseas_index as _ovg
+                            _gkey = _ovg.settled_key(code) or today
+                        except Exception:
+                            _gkey = today
+                    evn = (t >= 1505 or _ovs) and _IDX_GUARD['synced_on'].get(code) != _gkey
                     back = (not evn) and (not paused) and rows[-1]['date'] < recent_wd
                     if not (evn or back):
                         continue
@@ -7058,6 +7068,36 @@ class QuantHandler(http.server.BaseHTTPRequestHandler):
                     pass
                 self._json(_d5)
 
+            elif path == '/api/idx_live':
+                # v2.410 (用户 m11576): 海外指数的盘中刷新。
+                #   只推「此刻正在交易」的那几个市场 —— 全部收盘时前端根本不用轮询,
+                #   一次请求也省掉 3~13 个东财请求。日K 走本地存档, 这里只补实时价。
+                try:
+                    from quant_terminal import overseas_index as _ovl
+                    _open = []
+                    for _c in _idxr.OVERSEAS_CODES:
+                        try:
+                            if _ovl.session(_c).get('is_open'):
+                                _open.append(_c)
+                        except Exception:
+                            pass
+                    _items = []
+                    if _open:
+                        _snap = _ovl.snapshots(_open)
+                        for _c in _open:
+                            _v = _snap.get(_c) or {}
+                            if not _v.get('ok'):
+                                continue
+                            _it = dict(_v)
+                            _it['code'] = _c
+                            _it['name'] = _v.get('name') or _idxr.short_of(_c)
+                            _it['sess'] = _ovl.session(_c)
+                            _items.append(_it)
+                    self._json({'ok': True,
+                                'ts': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                'n': len(_open), 'open': _open, 'items': _items})
+                except Exception as _e:
+                    self._json({'ok': False, 'error': str(_e)[:200]})
             elif path == '/api/idx_list':
                 """v2.359 (用户 m38119): 指数一览 —— 七大指数的最近 N 根收盘价。
 

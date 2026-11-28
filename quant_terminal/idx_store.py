@@ -257,7 +257,10 @@ def _ensure_overseas(code, local=None):
         rows = []
     if not rows:
         return len(local or load(code))
-    rows = E._drop_forming_today(rows)
+    # v2.410 (用户 m11576): 海外市场的收盘时间与 A 股不同 —— 必须用该市场自己的
+    #   收盘时刻判定「这一天的 bar 是否已定稿」。用 A 股的北京 15:06 会把美股
+    #   22:31 刚开盘的半截日K写进 CSV, 而且增量只追加更大日期 ⇒ 永久错。
+    rows = _ov.drop_unsettled(rows, code)
     if not rows:
         return len(local or load(code))
     cur = local if local is not None else load(code)
@@ -277,7 +280,8 @@ def _sync_overseas(code, local=None):
         tail = []
     if not tail:
         return 'fail'
-    tail = E._drop_forming_today(tail)
+    # v2.410: 同上 —— 按该市场自己的收盘时刻过滤未定稿的 bar
+    tail = _ov.drop_unsettled(tail, code)
     if not tail:
         return 'noop'
     if not loc:
@@ -453,8 +457,17 @@ def list_view(limit=260):
             _rg = E._regime_from_rows(rows) or {}
         except Exception:
             _rg = {}
+        _ss = {}
+        if _is_overseas(c):
+            # v2.410 (用户 m11576): 海外市场的交易时段与 A 股完全不同, 左列要能
+            #   显示「这只现在开盘没有」。纯时间计算, 一次网络请求都不发。
+            try:
+                from quant_terminal import overseas_index as _ovs
+                _ss = _ovs.session(c)
+            except Exception:
+                _ss = {}
         out.append({
-            'code': c, 'name': name_of(c), 'short': short_of(c),
+            'code': c, 'name': name_of(c), 'short': short_of(c), 'sess': _ss,
             'n': len(rows),
             'start': rows[0]['date'] if rows else '',
             'end': rows[-1]['date'] if rows else '',

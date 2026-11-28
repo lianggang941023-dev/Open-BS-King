@@ -17693,6 +17693,8 @@ function mktClose(){
     try{ winShrink(w, function(){ w.style.display='none'; }); }catch(e){ w.style.display='none'; }
   }
   if(mktSt.timer){ clearInterval(mktSt.timer); mktSt.timer=null; }
+  /* v2.410: 窗口一关, 指数一览的盘中刷新也停 */
+  try{ if(typeof idxlLiveStop === 'function'){ idxlLiveStop(); } }catch(e){}
   mktPaintBtn();
 }
 // v2.293 (2026-11-13 用户 m14062): 「标题框高亮 + 整条淡化」原来只有市场总览有
@@ -20815,6 +20817,8 @@ function mktSetPage(p){
        || p === 'macro') ? p : 'overview';
   REG.page = p;
   mktSt.page = p;
+  /* v2.410: 离开「指数一览」就把盘中刷新停掉 —— 不在前台还每 15 秒打一次网是浪费 */
+  if(p !== 'idxlist' && typeof idxlLiveStop === 'function'){ idxlLiveStop(); }
   if(typeof phzSt !== 'undefined'){ phzSt.page = p; }
   mktPaintTitle();
   var b = $('mkt-body'), r = $('mkt-pane-regime'), h = $('mkt-pane-phase');
@@ -22533,7 +22537,8 @@ function idxpBindResize(){
    ══════════════════════════════════════════════════════════════════════════════ */
 var IDXL_LS = 'qt_idxlist_v1';
 var idxlSt = {rows: [], cur: '', ck: null, cm: null, chart: null,
-              bound: false, loading: false, kdata: null, mdata: null};
+              bound: false, loading: false, kdata: null, mdata: null,
+              liveT: null};   /* v2.410: liveT = 盘中刷新定时器 */
 
 function idxlMsg(t, k){
   var e = $('idxl-msg'); if(!e) return;
@@ -22556,6 +22561,65 @@ function idxlPct(v){
 }
 
 /* ── 左列：指数纵向列表 ─────────────────────────────────────── */
+/* v2.410 (用户 m11576): 海外市场交易状态 + 盘中刷新。
+   颜色口径: 盘中=金(活的) / 未开盘·午休=青 / 已收盘·周末=灰。
+   后端 overseas_index.session() 用 zoneinfo 按当地时区算, 一次网络请求都不发。 */
+var IDXL_SESS_COL = {open:'var(--gold)', lunch:'var(--cyan)', pre:'var(--cyan)',
+                     post:'var(--tx3)', weekend:'var(--tx3)'};
+/* 左列只有 244px, 状态必须缩到两个字 —— 「周末休市」32px 会把 富时100/SENSEX 的名字挤掉 */
+var IDXL_SESS_SHORT = {open:'盘中', lunch:'午休', pre:'未开', post:'收盘', weekend:'休市'};
+function idxlSessTag(ss){
+  if(!ss || !ss.state) return '';
+  var c = IDXL_SESS_COL[ss.state] || 'var(--tx3)';
+  // 盘中给个小圆点, 其余只写两个字
+  var dot = (ss.state === 'open')
+    ? '<span style="display:inline-block;width:4px;height:4px;border-radius:50%;'
+      + 'background:' + c + ';margin-right:2px;vertical-align:middle"></span>'
+    : '';
+  return '<span style="font-size:8px;color:' + c + ';flex:0 0 auto;white-space:nowrap" '
+       + 'title="' + escAttr(ss.tz || '') + ' ' + escAttr(ss.local || '') + '">'
+       + dot + escAttr(IDXL_SESS_SHORT[ss.state] || ss.state_cn || '') + '</span>';
+}
+var IDXL_LIVE_MS = 15000;      /* 15 秒一轮 —— 分时最快也就这个刷新密度 */
+function idxlLiveStop(){
+  if(idxlSt.liveT){ clearInterval(idxlSt.liveT); idxlSt.liveT = null; }
+}
+function idxlLiveStart(){
+  idxlLiveStop();
+  idxlSt.liveT = setInterval(function(){ idxlLiveTick(); }, IDXL_LIVE_MS);
+}
+async function idxlLiveTick(){
+  // 只在「指数一览」页可见时刷 —— 切走/关窗后定时器会被停掉, 这里再兜一道
+  if(mktSt.page !== 'idxlist' || !idxlSt.rows.length){ idxlLiveStop(); return; }
+  try{
+    var d = await api('/api/idx_live');
+    if(!d || !d.ok) return;
+    var its = d.items || [];
+    if(!its.length){                       /* 此刻全球都没开盘 -> 停掉, 不空转 */
+      idxlLiveStop();
+      var _m = $('idxl-msg');
+      if(_m && !_m.textContent) _m.textContent = '海外市场全部休市';
+      return;
+    }
+    var by = {}, i;
+    for(i = 0; i < its.length; i++){ by[its[i].code] = its[i]; }
+    var hitCur = false, any = false;
+    for(i = 0; i < idxlSt.rows.length; i++){
+      var r = idxlSt.rows[i], v = by[r.code];
+      if(!v) continue;
+      if(v.sess) r.sess = v.sess;
+      if(v.price != null){ r.last = v.price; any = true; }
+      if(v.pct != null) r.pct = v.pct;
+      if(r.code === idxlSt.cur) hitCur = true;
+    }
+    if(any) idxlPaintList();
+    // 选中那只是开盘的 -> 连分时一起重画(后端 0.2 秒, 比日K 便宜)
+    if(hitCur) idxlLoadM(idxlSt.cur);
+    var _mm = $('idxl-msg');
+    if(_mm) _mm.textContent = '盘中刷新 ' + (d.ts || '').slice(11, 16);
+  }catch(e){}
+}
+
 function idxlPaintList(){
   var box = $('idxl-list'); if(!box) return;
   var rows = idxlSt.rows || [];
@@ -22572,6 +22636,9 @@ function idxlPaintList(){
       +  '<span style="font-size:11px;color:' + (on ? 'var(--gold)' : 'var(--tx0)')
       +  ';font-weight:' + (on ? '700' : '400') + ';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">'
       +  escAttr(r.short || r.name || r.code) + '</span>'
+      /* v2.410 (用户 m11576): 海外指数的交易时段与 A 股完全不同 —— 直接标在名字后面,
+         一眼能看出「这只现在开盘没有」。A 股指数没有 sess 字段, 这一格自然为空。 */
+      +  idxlSessTag(r.sess)
       +  '<span style="font-size:10px;font-family:ui-monospace,Consolas,monospace;color:var(--tx2);flex:0 0 auto">'
       +  (r.last == null ? '--' : (+r.last).toFixed(2)) + '</span>'
       +  '<span style="font-size:9px;font-family:ui-monospace,Consolas,monospace;color:' + c
@@ -22865,11 +22932,14 @@ async function idxListArchiveFirst(){
 }
 
 async function idxListEnter(){
+  /* v2.410: 进来就开盘中刷新(后端会先判有没有市场开盘, 全休市前端秒停) */
+  idxlLiveStart();
   if(!idxlSt.rows.length){
     var hit = await idxListArchiveFirst();
-    if(!hit){ await idxListLoad(); return; }
+    if(!hit){ await idxListLoad(); idxlLiveTick(); return; }
     idxListLoad();                     /* 存档已上屏, 真数据后台覆盖 */
   }else { idxlPaintList(); idxlDrawK(); idxlDrawM(); }
+  idxlLiveTick();
 }
 function idxListReload(){
   idxlSt.rows = [];
@@ -22889,6 +22959,7 @@ function idxListReload(){
 window.idxListPick = idxListPick;
 window.idxListEnter = idxListEnter;
 window.idxListReload = idxListReload;
+window.idxlLiveTick = idxlLiveTick;   /* v2.410 盘中刷新(调试/手动触发用) */
 
 window.idxPairPick = idxPairPick;
 /* v2.369: 内联 onclick 走全局作用域 —— 四个股债利差函数也必须挂上去

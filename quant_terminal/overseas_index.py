@@ -258,6 +258,174 @@ def tail_bars(code, n=10):
     return rows[-int(n):] if (n and rows) else rows
 
 
+# ── 交易时段 / 盘中状态 (v2.410, 用户 m11576) ────────────────────────────
+#   海外各市场的开收盘时间与 A 股完全不同, 欧洲/北美还有夏令时。
+#   时区一律用 zoneinfo 换算(本机实测可用; 开源用户 Windows 上装了 tzdata 也行),
+#   缺 tzdata 时退回固定时差 —— 夏令时会差 1 小时, 只影响「是否盘中」的提示,
+#   不影响任何取数/落盘的正确性(落盘另有一道 is_settled 用同一套时间)。
+from datetime import datetime as _dt, timedelta as _td, timezone as _tzfix
+
+try:
+    from zoneinfo import ZoneInfo as _ZI
+except Exception:                                    # pragma: no cover
+    _ZI = None
+
+# 市场 -> (IANA 时区, [(开盘, 收盘) 当地分钟数]); 收盘 >1440 表示跨到次日凌晨。
+#   一律按常规交易时段, 不含盘前/盘后。
+_SESS = {
+    'us': ('America/New_York', [(570, 960)]),                   # 09:30-16:00
+    'hk': ('Asia/Hong_Kong',   [(570, 720), (780, 960)]),       # 09:30-12:00 13:00-16:00
+    'jp': ('Asia/Tokyo',       [(540, 690), (750, 930)]),       # 09:00-11:30 12:30-15:30
+    'kr': ('Asia/Seoul',       [(540, 930)]),                   # 09:00-15:30
+    'tw': ('Asia/Taipei',      [(540, 810)]),                   # 09:00-13:30
+    'au': ('Australia/Sydney', [(600, 960)]),                   # 10:00-16:00
+    'uk': ('Europe/London',    [(480, 990)]),                   # 08:00-16:30
+    'de': ('Europe/Berlin',    [(540, 1050)]),                  # 09:00-17:30
+    'fr': ('Europe/Paris',     [(540, 1050)]),                  # 09:00-17:30
+    'in': ('Asia/Kolkata',     [(555, 930)]),                   # 09:15-15:30
+    'sg': ('Asia/Singapore',   [(540, 990), (1020, 1755)]),     # 09:00-16:30 17:00-05:15(+1)
+}
+_FALLBACK_OFF = {'us': -5, 'hk': 8, 'jp': 9, 'kr': 9, 'tw': 8, 'au': 10,
+                 'uk': 0, 'de': 1, 'fr': 1, 'in': 5.5, 'sg': 8}
+_TZC = {}
+
+_CN = {'pre': '未开盘', 'open': '盘中', 'lunch': '午休', 'post': '已收盘',
+       'weekend': '周末休市'}
+
+
+def _tz_of(mkt):
+    """市场 -> tzinfo (带缓存)。"""
+    pair = _SESS.get(mkt)
+    if not pair:
+        return None
+    name = pair[0]
+    if name in _TZC:
+        return _TZC[name]
+    z = None
+    if _ZI is not None:
+        try:
+            z = _ZI(name)
+        except Exception:
+            z = None
+    if z is None:
+        z = _tzfix(_td(hours=_FALLBACK_OFF.get(mkt, 0)))
+    _TZC[name] = z
+    return z
+
+
+def session(code):
+    """该指数所在市场**此刻**的交易状态。纯本地时间计算, 一次网络请求都不发。
+
+    返回 {} 表示不是海外指数; 否则:
+      {mkt, tz, local('YYYY-MM-DD HH:MM'), hm, state, state_cn, is_open, is_active}
+    state: pre/open/lunch/post/weekend
+    """
+    c = str(code or '').strip().lower()
+    mkt = c.split('.')[0]
+    pair = _SESS.get(mkt)
+    if not pair:
+        return {}
+    z = _tz_of(mkt)
+    lc = _dt.now(z)
+    mins = lc.hour * 60 + lc.minute
+    sess = pair[1]
+    op = False
+    for a, b in sess:
+        if b <= 1440:
+            if a <= mins < b:
+                op = True
+        else:
+            if mins >= a or mins < (b - 1440):
+                op = True
+    if lc.weekday() >= 5:
+        state = 'weekend'
+    elif op:
+        state = 'open'
+    elif mins < sess[0][0]:
+        state = 'pre'
+    else:
+        state = 'post'
+        for i in range(len(sess) - 1):
+            a2, b2 = sess[i][1], sess[i + 1][0]
+            if b2 <= 1440 and a2 <= mins < b2:
+                state = 'lunch'
+                break
+    return {'mkt': mkt, 'tz': pair[0], 'local': lc.strftime('%Y-%m-%d %H:%M'),
+            'hm': lc.strftime('%H:%M'), 'state': state,
+            'state_cn': _CN.get(state, state),
+            'is_open': state == 'open', 'is_active': state in ('open', 'lunch')}
+
+
+def _settle_at(code, date_str):
+    """某市场对 date_str 这一天的行情, 何时算「收盘确认」。"""
+    mkt = str(code or '').strip().lower().split('.')[0]
+    pair = _SESS.get(mkt)
+    if not pair:
+        return None
+    z = _tz_of(mkt)
+    try:
+        d = _dt.strptime(str(date_str)[:10], '%Y-%m-%d')
+    except Exception:
+        return None
+    best = None
+    for a, b in pair[1]:
+        if b <= 1440:
+            cand = d.replace(hour=b // 60, minute=b % 60)
+        else:
+            cand = (d + _td(days=1)).replace(hour=(b - 1440) // 60, minute=(b - 1440) % 60)
+        if best is None or cand > best:
+            best = cand
+    try:
+        return best.replace(tzinfo=z)
+    except Exception:
+        return best
+
+
+def is_settled(code, date_str):
+    """该市场对 date_str 这一天是否已收盘确认(可以安全落盘)。不认识的市场返回 True(不拦)。"""
+    t = _settle_at(code, date_str)
+    if t is None:
+        return True
+    try:
+        return _dt.now(t.tzinfo) >= t
+    except Exception:
+        return True
+
+
+def settled_key(code):
+    """该市场「最近一个已经收盘」的当地交易日(YYYY-MM-DD), 没有则 ''。
+
+    给 server._index_guard_loop 做「每个市场每个交易日只同步一次」的键 ——
+    原来看北京时间每天同步一次, 美股夜里开盘那一轮早就用掉了配额, 收盘后反而不补。
+    """
+    mkt = str(code or '').strip().lower().split('.')[0]
+    if mkt not in _SESS:
+        return ''
+    lc = _dt.now(_tz_of(mkt))
+    for back in range(0, 8):
+        t = lc - _td(days=back)
+        if t.weekday() >= 5:          # 当地时间周末没有行情, 不能当同步键
+            continue
+        d = t.strftime('%Y-%m-%d')
+        if is_settled(code, d):
+            return d
+    return ''
+
+
+def drop_unsettled(rows, code):
+    """只保留「该市场当日已收盘确认」的 bar。
+
+    🔴 为什么不能用 engine._drop_forming_today: 那条是按**北京 15:06** 判的。
+    美股 22:30 才开盘, 那个点北京早已过 15:06 ⇒ 判「已收盘」⇒ 把刚开盘的半截
+    日K当成收盘 bar 写进 CSV, 而增量同步只追加 date 更大的行, 以后永远覆盖不掉。
+    """
+    out = []
+    for r in rows or []:
+        if is_settled(code, r.get('date')):
+            out.append(r)
+    return out
+
+
 def minute(code):
     """当日分时。返回 {ok, code, name, pre, date, times:[HHMM], prices:[], source}
     或 {ok:False, no_minute:'...'} —— 后者表示「这个指数没有分时源」, 不是取数失败。
@@ -325,6 +493,43 @@ def snapshot(code):
             'price': _f('f43'), 'pre': _f('f60'), 'pct': _f('f170'),
             'open': _f('f46'), 'high': _f('f44'), 'low': _f('f45'),
             'volume': _f('f47', 1.0)}
+
+
+def snapshots(codes):
+    """批量实时快照(线程池并发调 snapshot)。
+
+    东财批量接口 ulist.np 对海外 secid 一律返回 0(实测), 不可用;
+    但单只 push2 接口完全正常, 十几只并发约 0.3~0.6 秒, 和批量差不多。
+    返回 {code: {'ok','name','price','pre','pct','open','high','low','volume'}}
+    """
+    out = {}
+    want = []
+    for c in (codes or []):
+        _c = str(c or '').strip().lower()
+        it = CODES.get(_c)
+        if it and it.get('secid'):
+            want.append(_c)
+    if not want:
+        return out
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _one(_c):
+            try:
+                return _c, snapshot(_c)
+            except Exception as _e:
+                return _c, {'ok': False, 'error': str(_e)[:120]}
+
+        with ThreadPoolExecutor(max_workers=min(8, len(want))) as ex:
+            for _c, _v in ex.map(_one, want):
+                out[_c] = _v
+    except Exception:
+        for _c in want:
+            try:
+                out[_c] = snapshot(_c)
+            except Exception as _e:
+                out[_c] = {'ok': False, 'error': str(_e)[:120]}
+    return out
 
 
 def selftest():
