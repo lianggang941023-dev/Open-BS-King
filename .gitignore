@@ -27,6 +27,7 @@ data_archive/
 kline_data/fuyao_cache/
 kline_data/api_cache/
 kline_data/*.log
+kline_data/**/*.log
 
 # ===== 凭据（绝不入库）=====
 quant_terminal/data_sources.local.json

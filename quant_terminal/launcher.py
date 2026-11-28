@@ -54,6 +54,15 @@ CHROME_PATHS = [
     os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'),
 ]
 
+# 没有 Chrome 就退回 Edge —— Edge 也是 Chromium 内核, 同样支持 --app=,
+# 打开后一样是没有地址栏的「应用窗口」, 而不是普通浏览器标签页。
+# (Windows 10/11 默认自带 Edge, 所以别人装完一定能拿到类应用窗口)
+EDGE_PATHS = [
+    r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+    r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
+    os.path.expandvars(r'%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe'),
+]
+
 APP_TITLE_KEY = 'BS King'          # 应用窗口标题里必然含这个
 
 # ---------------------------------------------------------------- 日志
@@ -223,22 +232,40 @@ def chrome_exe():
     return None
 
 
+def edge_exe():
+    for p in EDGE_PATHS:
+        if p and os.path.isfile(p):
+            return p
+    return None
+
+
+def app_browser():
+    """能开「应用窗口(--app)」的浏览器: 优先 Chrome, 其次 Edge。"""
+    ce = chrome_exe()
+    if ce:
+        return ce, 'Chrome'
+    ee = edge_exe()
+    if ee:
+        return ee, 'Edge'
+    return None, ''
+
+
 def open_app():
-    """打开应用窗口(优先 Chrome --app, 与原来快捷方式一致的观感)。"""
+    """打开应用窗口(Chrome/Edge --app, 没有地址栏, 与原来快捷方式一致的观感)。"""
     hwnd = find_app_window()
     if hwnd:
         focus_window(hwnd)
         log('窗口已在运行 → 切到前台 hwnd=%s' % hwnd)
         return 'focus'
-    ce = chrome_exe()
-    if ce:
-        subprocess.Popen([ce, '--start-maximized', '--app=' + URL],
+    exe, nm = app_browser()
+    if exe:
+        subprocess.Popen([exe, '--start-maximized', '--app=' + URL],
                          creationflags=CREATE_NO_WINDOW, close_fds=True)
-        log('已用 Chrome --app 打开 %s' % URL)
-        return 'chrome'
+        log('已用 %s --app 打开 %s' % (nm, URL))
+        return ('chrome' if nm == 'Chrome' else 'edge')
     try:
         os.startfile(URL)
-        log('已用默认浏览器打开 %s' % URL)
+        log('没找到 Chrome/Edge, 已用默认浏览器打开 %s (会是普通标签页)' % URL)
         return 'default'
     except Exception as e:
         log('打开浏览器失败: %s' % e)
@@ -306,6 +333,114 @@ class Splash(object):
         except Exception:
             pass
 
+# ---------------------------------------------------------------- 建快捷方式
+
+
+def pythonw_path():
+    """优先用 pythonw.exe(不闪黑窗); 没有就退回当前解释器。"""
+    exe = os.path.abspath(sys.executable)
+    d, n = os.path.split(exe)
+    cand = os.path.join(d, 'pythonw.exe')
+    if os.path.isfile(cand):
+        return cand
+    return exe
+
+
+def _ps_quote(s):
+    """PowerShell 单引号字符串转义。"""
+    return "'" + str(s).replace("'", "''") + "'"
+
+
+def make_shortcut(lnk_path):
+    """用 PowerShell + WScript.Shell 建一个指向 launcher.py 的 .lnk。"""
+    ico = ICO if os.path.isfile(ICO) else ''
+    ps = [
+        "$ErrorActionPreference='Stop'",
+        "$sh = New-Object -ComObject WScript.Shell",
+        "$s = $sh.CreateShortcut(%s)" % _ps_quote(lnk_path),
+        "$s.TargetPath = %s" % _ps_quote(pythonw_path()),
+        "$s.Arguments = '\"%s\"'" % os.path.join(HERE, 'launcher.py'),
+        "$s.WorkingDirectory = %s" % _ps_quote(BASE),
+        ("$s.IconLocation = %s" % _ps_quote(ico + ',0')) if ico else '',
+        "$s.Description = 'BS King 量化看盘选股终端'",
+        "$s.WindowStyle = 7",
+        "$s.Save()",
+        "if (Test-Path %s) { 'OK' } else { 'FAIL' }" % _ps_quote(lnk_path),
+    ]
+    ps = [x for x in ps if x]
+    try:
+        r = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                            '-Command', '; '.join(ps)],
+                           capture_output=True, timeout=60, creationflags=CREATE_NO_WINDOW)
+        out = (r.stdout or b'').decode('utf-8', 'replace')
+        err = (r.stderr or b'').decode('utf-8', 'replace')
+        ok = 'OK' in out
+        if not ok:
+            log('建快捷方式失败 %s | out=%s err=%s' % (lnk_path, out.strip()[:200], err.strip()[:300]))
+        return ok
+    except Exception as e:
+        log('建快捷方式异常 %s: %s' % (lnk_path, e))
+        return False
+
+
+def make_shortcuts():
+    """给「刚 clone 下来的人」一键建桌面 + 开始菜单快捷方式。"""
+    # cmd 控制台默认 GBK —— 遇到它装不下的字符宁可显示成 '?' 也绝不能崩
+    try:
+        sys.stdout.reconfigure(errors='replace')
+        sys.stderr.reconfigure(errors='replace')
+    except Exception:
+        pass
+    name = 'BS King 量化终端.lnk'
+    made = []
+    targets = []
+    desk = ''
+    try:
+        desk = subprocess.run(['powershell', '-NoProfile', '-Command',
+                               '[Environment]::GetFolderPath("Desktop")'],
+                              capture_output=True, timeout=30,
+                              creationflags=CREATE_NO_WINDOW).stdout.decode('utf-8', 'replace').strip()
+    except Exception:
+        pass
+    if not desk:
+        desk = os.path.join(os.path.expanduser('~'), 'Desktop')
+    targets.append(('桌面', os.path.join(desk, name)))
+    appdata = os.environ.get('APPDATA') or os.path.expanduser(r'~\AppData\Roaming')
+    targets.append(('开始菜单', os.path.join(
+        appdata, 'Microsoft', 'Windows', 'Start Menu', 'Programs', name)))
+
+    print('=' * 62)
+    print('  BS King 量化终端 · 创建快捷方式')
+    print('=' * 62)
+    print('  仓库目录 : %s' % BASE)
+    print('  Python   : %s' % pythonw_path())
+    print('  图标     : %s' % (ICO if os.path.isfile(ICO) else '(无, 用默认)'))
+    print('-' * 62)
+    for label, p in targets:
+        d = os.path.dirname(p)
+        if d and not os.path.isdir(d):
+            try:
+                os.makedirs(d)
+            except Exception:
+                pass
+        ok = make_shortcut(p)
+        # 只用 GBK 里有的字符 —— cmd 控制台默认 GBK, ✔/✘ 这种会 UnicodeEncodeError
+        print('  %-8s %s' % (label, '[OK] 已创建' if ok else '[失败]'))
+        print('            %s' % p)
+        if ok:
+            made.append(p)
+    print('-' * 62)
+    if made:
+        print('  完成! 以后直接双击桌面上的「%s」即可。' % name.rstrip('.lnk'))
+        print('  它会自动: 起服务 → 等服务就绪 → 打开应用窗口(无地址栏)。')
+        print('  服务已经在跑时再双击 = 把窗口提到最前, 不会开第二个。')
+    else:
+        print('  一个都没建成。可以把上面的报错发给我。')
+    print('=' * 62)
+    log('--make-shortcut 完成: %d 个' % len(made))
+    return 0 if made else 1
+
+
 # ---------------------------------------------------------------- 主流程
 
 
@@ -348,11 +483,16 @@ def bring_up(no_open=False, splash=None, timeout=90):
 def main():
     args = set(a.lower() for a in sys.argv[1:])
     if '--check' in args:
+        _bexe, _bnm = app_browser()
         info = {'probe': probe(), 'port_busy': port_busy(), 'pids': pid_on_port(),
-                'chrome': chrome_exe(), 'window': find_app_window(),
-                'log': LOG_FILE, 'base': BASE}
+                'chrome': chrome_exe(), 'edge': edge_exe(), 'app_browser': _bnm,
+                'window': find_app_window(),
+                'log': LOG_FILE, 'base': BASE, 'python': sys.executable}
         print(json.dumps(info, ensure_ascii=False, indent=1))
         return 0
+
+    if '--make-shortcut' in args:
+        return make_shortcuts()
 
     no_open = '--no-open' in args
     no_splash = '--no-splash' in args

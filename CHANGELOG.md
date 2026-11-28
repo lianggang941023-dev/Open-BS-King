@@ -20,6 +20,75 @@
 ---
 
 ---
+## v2.407 — 2026-11-28
+
+### 问题
+
+从 GitHub 下载的人，装好依赖以后**没有任何一键启动的办法**：
+
+- 仓库里没有任何 `.lnk` / `.bat` 启动入口，只能照着 README 敲 `python -m quant_terminal.server`
+- `quant_terminal/launcher.py` 其实早就写好并能用，但它只是 `.py`，新用户不知道要把它做成快捷方式
+- `quant_terminal/watchdog_hidden.vbs` 里写死了作者本机的路径
+  （`C:\Users\89302\...\python.exe` 和 `D:\AI Working\BS King\...`），
+  别人 clone 下来一跑就失败，开机自启守护等于没有
+
+### 改法
+
+**1. 新增 `一键创建桌面图标.bat`（仓库根目录）**
+
+双击一次即可，它会：
+
+- 自动找 `py` / `python`（找不到就提示去 python.org 装、并提醒勾选 Add to PATH）
+- 检查 `pip install -r requirements.txt` 有没有跑过（没跑就提示先跑）
+- 在**桌面**和**开始菜单**各建一个「BS King 量化终端」图标
+- 图标指向 `pythonw.exe`（无黑窗）+ `quant_terminal/launcher.py`，工作目录 = 仓库根
+
+以后双击那个图标就是一键启动：起服务 → 等就绪 → 打开应用窗口。
+
+**2. `quant_terminal/launcher.py`**
+
+- 新增 `--make-shortcut`：建桌面 + 开始菜单快捷方式（用 PowerShell 的 `WScript.Shell` COM，
+  不依赖任何第三方库）
+- 新增 **Edge 兜底**：找不到 Chrome 就用 Edge，同样是 Chromium、同样支持 `--app=`，
+  开出来一样是无地址栏的应用窗口（新增 `EDGE_PATHS` / `edge_exe()` / `app_browser()`）
+- `--check` 体检多打印 `edge` / `app_browser` / `python` 三项
+- 修掉一个 GBK 控制台崩溃：`✔/✘` 这两个字符在 cmd 里会 `UnicodeEncodeError`，
+  文案改成 `[OK]` / `[失败]`，并对 stdout/stderr 加 `errors='replace'`
+
+**3. `quant_terminal/watchdog_hidden.vbs` 重写成可移植版**
+
+- 路径全部从 `WScript.ScriptFullName` 推算（`quant_terminal` 的父目录 = 仓库根），不再有绝对路径
+- Python 按顺序找：`%LOCALAPPDATA%\Programs\Python\Python312/311/313\pythonw.exe` →
+  `C:\Python3xx\pythonw.exe` → `where pythonw.exe` → `where python.exe`
+- 文件改用 **UTF-16LE + BOM** 保存（Windows 脚本宿主对无 BOM 文件的编码判断不可靠，中文注释容易乱码）
+- 一份代码在任何机器、任何目录都能跑
+
+**4. `README.md` 启动方式 A 改写**
+
+原来写的是「手动把 launcher.py 做成快捷方式（目标 pythonw.exe、参数 …、起始位置 …）」——
+对普通用户太难。现在只有一句：**双击 `一键创建桌面图标.bat`**。
+
+### 实测
+
+- 在本机用 F: 仓库跑 `一键创建桌面图标.bat`：桌面 + 开始菜单两个图标都建成，
+  属性核对 `Target=pythonw.exe`、`Arguments="<仓库>\quant_terminal\launcher.py"`、
+  `WorkingDirectory=<仓库根>`、`WindowStyle=7`（最小化启动器自身，窗口由 Chrome `--app` 打开）
+- 图标：自用版有 `_开发产物\文档\图标\BSKing8799.ico` 就用它，开源版没有会自动退回
+  `quant_terminal/favicon.ico`（不报错、不影响使用）
+- 端到端：先杀掉 8799 → 双击建出来的图标 → **4.8 秒**服务就绪并打开应用窗口
+  （日志：`拉起服务器 … → 服务已就绪 (用时 1.7 秒) → 完成: started`）
+- 服务已在跑时再双击 → 直接把已有窗口切到前台，不开第二个
+- 新的 `watchdog_hidden.vbs`：用 `cscript` 跑通，能正确拉起
+  `pythonw.exe watchdog.py`（不再需要任何写死的路径）
+
+### 改动文件
+
+- `一键创建桌面图标.bat`（新增）
+- `quant_terminal/launcher.py`
+- `quant_terminal/watchdog_hidden.vbs`（重写）
+- `README.md`
+- `VERSION`
+
 ## v2.406 — 2026-11-28
 
 ### 双击图标即启动并使用（用户 m10342）
