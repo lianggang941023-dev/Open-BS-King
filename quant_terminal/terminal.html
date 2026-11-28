@@ -2819,6 +2819,7 @@ var IDX_NAMES={'sh000001':'上证指数','sz399001':'深证成指','sz399006':'�
 var IDX_SLOT_LS='qt_idx_slot_v1';
 var INDEX_TOP7=['sh000001','sz399001','sz399006','sh000680','sh000688','sh000300','sz399905'];
 var INDEX_SLOTS={};        /* slot -> 候选数组 [{code,name,short}], 由 /api/idx_slots 填 */
+var IDX_SRC={};            /* v2.412: code -> 取数通路 ('overseas' 等), 由 /api/idx_slots 填 */
 var idxSlotPick={};        /* slot -> 当前选中的 code（偏离默认才有键）*/
 function idxSlotsLoad(){
   try{
@@ -2839,6 +2840,7 @@ function idxSlotsFetch(){
   api('/api/idx_slots').then(function(d){
     if(d && d._err) return;
     INDEX_SLOTS=(d&&d.slots)||{};
+    IDX_SRC=(d&&d.srcs)||{};   /* v2.412: 海外标记 */
     /* 后端是最新事实：万一 localStorage 里存了个已经下线的代码，丢掉它 */
     var bad=false, k, i, ok;
     for(k in idxSlotPick){
@@ -2854,6 +2856,7 @@ function idxSlotsFetch(){
     /* v2.360g: 12 只到手了, 现在才真正并进多股同列那两张表 */
     try{ if(typeof mtxAbsorbIdx==='function') mtxAbsorbIdx(); }catch(e){}
     try{ if(window._lastSentiment) renderIndices(window._lastSentiment.indices, window._lastSentiment.index_regimes); }catch(e){}
+    try{ idxOvsStart(); }catch(e){}   /* v2.412: 上次选中过海外指数的话, 开机就接着刷 */
   });
 }
 idxSlotsLoad();
@@ -2913,6 +2916,62 @@ function renderIndices(indices, regimes){
   window._lastSentiment={indices:indices, index_regimes:regimes};
   $('idx-bar').innerHTML=h;
 }
+/* ---- v2.412 (用户 m12024): 顶栏海外指数的盘中刷新 --------------------------------
+   背景: startIndexRefresh() 的节奏完全按**A 股**交易状态定 —— 到 POST_MARKET / WEEKEND /
+     HOLIDAY 时既把间隔拉到 10 分钟, 又**根本不再调 fetchSentiment()** (见那一行的 if)。
+     而道指/纳指/日经/韩国恰好是在 A 股收盘之后才开盘的, 于是顶栏这两格会一直停在
+     「上一次页面加载时的价」, 一晚上不动。用户要的就是这条缺口。
+   做法: 顶栏单开一条**只补海外价**的轻量轮询 ——
+     · 只有当前顶栏确实摆着海外指数时才跑 (没摆 = 一个请求都不发)
+     · 走 /api/idx_live: 后端只推「此刻正开市」的那几个市场, 全休市时**零网络请求**
+     · 拿到就原地改 window._lastSentiment.indices 再 renderIndices, 不整页重拉
+       (/api/sentiment 一次 2.7 秒, 不能按 15 秒轮它)
+     · 有市场开市 → 15 秒; 全休市 → 60 秒慢探 (只算本地时间, 0.02 秒)
+   ⚠ 别改成 setInterval: 间隔要随「有没有市场开市」变。 */
+var IDX_OVS_T=null, IDX_OVS_MS_OPEN=15000, IDX_OVS_MS_IDLE=60000;
+
+/* 顶栏当前摆着的海外指数代码（没有就返回空数组）*/
+function idxOvsCodes(){
+  var a=[], i, c;
+  for(i=0;i<INDEX_TOP7.length;i++){
+    c=slotCodeOf(INDEX_TOP7[i]);
+    if(c && IDX_SRC[c]==='overseas') a.push(c);
+  }
+  return a;
+}
+function idxOvsStop(){
+  if(IDX_OVS_T){ clearTimeout(IDX_OVS_T); IDX_OVS_T=null; }
+}
+function idxOvsStart(){
+  idxOvsStop();
+  if(!idxOvsCodes().length) return;        /* 没摆海外指数 → 不轮询 */
+  IDX_OVS_T=setTimeout(idxOvsTick, 2500);  /* 选完先等一下, 别跟右键那一下抢 */
+}
+async function idxOvsTick(){
+  IDX_OVS_T=null;
+  if(!idxOvsCodes().length) return;        /* 期间被换掉了 → 自然停 */
+  var next=IDX_OVS_MS_IDLE, d=null;
+  try{ d=await api('/api/idx_live'); }catch(e){}
+  if(d && d.ok && (d.items||[]).length){
+    next=IDX_OVS_MS_OPEN;
+    var by={}, i, it;
+    for(i=0;i<d.items.length;i++){ it=d.items[i]; if(it && it.code) by[it.code]=it; }
+    var cs=idxOvsCodes(), ls=window._lastSentiment||{}, ix=ls.indices||{}, hit=false;
+    for(i=0;i<cs.length;i++){
+      var v=by[cs[i]];
+      if(!v || v.price==null) continue;
+      var o=ix[cs[i]]||{};
+      if(o.price!==v.price || o.change_pct!==v.pct){
+        ix[cs[i]]={'name':o.name||v.name||cs[i], 'price':v.price,
+                   'change_pct':v.pct, 'amount_yi':o.amount_yi||0};
+        hit=true;
+      }
+    }
+    if(hit){ try{ renderIndices(ix, ls.index_regimes||{}); }catch(e){} }
+  }
+  if(idxOvsCodes().length) IDX_OVS_T=setTimeout(idxOvsTick, next);
+}
+
 // ---- v2.62 (2026-09-10): 成交预测悬停浮窗 (5行明细) ----
 // ---- v2.63 (2026-09-10): 两个联动浮窗 — ① RSRS|情绪 ② 成交额明细|量能历史 ----
 var _TV=null;                     // 最新 turnover (来自 /api/sentiment)
@@ -18077,6 +18136,8 @@ function idxMenuPick(slot, code){
   idxMenuClose();
   /* 立刻按新格子重画, 不等下一轮 /api/sentiment */
   try{ if(window._lastSentiment) renderIndices(window._lastSentiment.indices, window._lastSentiment.index_regimes); }catch(e){}
+  /* v2.412: 换成海外指数 → 起那条独立轮询; 换回 A 股指数 → 它会自己停 */
+  try{ idxOvsStart(); }catch(e){}
 }
 (function(){
   /* 点菜单项 */
@@ -18099,6 +18160,9 @@ window.idxMenuPick=idxMenuPick;
 window.idxMenuClose=idxMenuClose;
 window.idxSlotsFetch=idxSlotsFetch;
 window.slotCodeOf=slotCodeOf;
+window.idxOvsStart=idxOvsStart;   /* v2.412 */
+window.idxOvsStop=idxOvsStop;
+window.idxOvsTick=idxOvsTick;
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 })();
